@@ -42,6 +42,7 @@ def _label(field: str) -> str:
         "capital_usd": "Капітал",
         "min_edge_pp": "Мін. едж",
         "min_net_edge_pp": "Мін. едж (чистий)",
+        "max_days": "Термін до дедлайну, макс.",
         "scan_interval_min": "Інтервал сканування",
     }[field]
 
@@ -51,6 +52,8 @@ def _fmt_value(field: str, value: float) -> str:
         return f"${value:,.0f}"
     if field == "scan_interval_min":
         return f"{value:.0f} хв"
+    if field == "max_days":
+        return f"{value:.0f} дн."
     return f"{value:.1f} п.п."
 
 
@@ -115,6 +118,7 @@ class TelegramBot:
             f"Капітал на угоду: {_fmt_value('capital_usd', s['capital_usd'])}\n"
             f"Мін. едж (сирий): {_fmt_value('min_edge_pp', s['min_edge_pp'])}\n"
             f"Мін. едж (чистий): {_fmt_value('min_net_edge_pp', s['min_net_edge_pp'])}\n"
+            f"Термін до дедлайну, макс.: {_fmt_value('max_days', s['max_days'])}\n"
             f"Інтервал сканування: {_fmt_value('scan_interval_min', s['scan_interval_min'])}\n"
             f"Активи: {', '.join(s['assets']) or '—'}\n"
             f"Предикт-маркети: {', '.join(s['prediction_venues']) or '—'}\n"
@@ -147,6 +151,7 @@ class TelegramBot:
             self._numeric_row("capital_usd", s),
             self._numeric_row("min_edge_pp", s),
             self._numeric_row("min_net_edge_pp", s),
+            self._numeric_row("max_days", s),
             self._numeric_row("scan_interval_min", s),
             self._toggle_row("asset", ["ETH", "BTC"], s["assets"]),
             self._toggle_row("pm", ALL_PREDICTION_VENUES, s["prediction_venues"]),
@@ -297,6 +302,7 @@ class TelegramBot:
         cfg.scan.option_venues = list(settings["option_venues"]) or cfg.scan.option_venues
         cfg.scan.min_edge_pp = settings["min_edge_pp"]
         cfg.scan.min_net_edge_pp = settings["min_net_edge_pp"]
+        cfg.scan.max_days = settings["max_days"]
         cfg.risk.max_capital_per_trade_usd = settings["capital_usd"]
         cfg.sizing.capital_usd = settings["capital_usd"]
         cfg._sync_risk_into_sizing()

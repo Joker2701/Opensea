@@ -20,7 +20,7 @@ class ScanConfig:
     prediction_venues: list[str] = field(default_factory=lambda: ["polymarket"])
     option_venues: list[str] = field(default_factory=lambda: ["deribit"])
     min_days: float = 21.0
-    max_days: float = 900.0
+    max_days: float = 365.0             # дефолт: до року; змінюється з /menu
     min_volume_usd: float = 100_000.0
     min_edge_pp: float = 3.0            # мінімальний «сирий» едж до розміщення
     min_net_edge_pp: float = 1.0        # після комісій і спреду

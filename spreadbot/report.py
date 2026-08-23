@@ -5,7 +5,7 @@ import datetime as dt
 import math
 from typing import Optional
 
-from .models import ClaimKind, Opportunity, Structure
+from .models import ClaimKind, Opportunity, Side, Structure
 from .pricing.surface import VolSurface
 from .strategy.payoff import mark_to_market
 
@@ -14,6 +14,24 @@ LINE = "─" * 78
 
 def money(x: float) -> str:
     return f"{x:>10,.2f}"
+
+
+def _limit_price(book, side: Side) -> Optional[float]:
+    """Ціна топ-рівня книги — те, що дає лімітка «в ринок» без проковзування.
+
+    Бот сам не вирішує, лімітка це чи маркет: рахує обидва сценарії, а
+    яким заходити — вирішує людина під час купівлі.
+    """
+    return book.best_ask if side is Side.BUY else book.best_bid
+
+
+def _leg_price_note(price: float, book, side: Side) -> str:
+    """`ціна @ маркет | лімітка: X (топ книги)` — або без лімітки, якщо
+    книга порожня (адаптер віддав лише останню угоду/mark, без глибини)."""
+    limit = _limit_price(book, side)
+    if limit is None or abs(limit - price) < 1e-9:
+        return ""
+    return f"  [лімітка по топу книги: {limit:.4f}]"
 
 
 def opportunity_card(op: Opportunity) -> str:
@@ -30,14 +48,21 @@ def opportunity_card(op: Opportunity) -> str:
         f"  ціна YES ринку : {m.market_prob:6.2%}   модель: {m.model_prob:6.2%}   "
         f"едж: {m.edge_pp:+.1f} в.п.",
         "",
-        f"  НОГА 1  {pm.outcome.value.upper():>3} × {pm.size:,.0f} @ {pm.price:.3f}"
-        f"  -> вартість {money(pm.cost)}",
+        f"  НОГА 1  {pm.outcome.value.upper():>3} × {pm.size:,.0f} @ {pm.price:.3f} (маркет)"
+        f"  -> вартість {money(pm.cost)}"
+        f"{_leg_price_note(pm.price, pm.market.book(pm.outcome), pm.side)}",
     ]
     for i, leg in enumerate(st.options, start=2):
         rows.append(
             f"  НОГА {i}  {leg.side.value.upper():>4} {leg.qty:g} × {leg.quote.symbol} "
-            f"@ {leg.price:,.2f}  -> {money(leg.cost)}"
+            f"@ {leg.price:,.2f} (маркет)  -> {money(leg.cost)}"
+            f"{_leg_price_note(leg.price, leg.quote.book, leg.side)}"
         )
+    rows.append(
+        "  (маркет = ціна проходом по стакану на весь розмір — саме на ній "
+        "рахуються гарантії нижче; лімітка по топу — краща ціна, але без "
+        "гарантії заповнення)"
+    )
     rows += [
         "",
         f"  капітал        : {money(m.capital)}",
