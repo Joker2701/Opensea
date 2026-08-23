@@ -47,6 +47,8 @@ def opportunity_card(op: Opportunity) -> str:
         f"{claim.deadline:%Y-%m-%d} ({m.days:.0f} дн.)",
         f"  ціна YES ринку : {m.market_prob:6.2%}   модель: {m.model_prob:6.2%}   "
         f"едж: {m.edge_pp:+.1f} в.п.",
+        f"  IV (тенор {m.atm_iv_term_days:.0f}д, довідково): {m.atm_iv_near:6.1%}"
+        f"  — нижче зазвичай читають як спокійніший режим для входу",
         "",
         f"  НОГА 1  {pm.outcome.value.upper():>3} × {pm.size:,.0f} @ {pm.price:.3f} (маркет)"
         f"  -> вартість {money(pm.cost)}"

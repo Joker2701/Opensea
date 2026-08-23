@@ -48,6 +48,15 @@ class TestEndToEnd(unittest.TestCase):
         scores = [o.score for o in self.ops]
         self.assertEqual(scores, sorted(scores, reverse=True))
 
+    def test_atm_iv_reference_is_populated(self):
+        # довідкове поле (не гейтить нічого) — але має бути порахованим і
+        # правдоподібним, а не нулем/сміттям
+        for op in self.ops:
+            m = op.metrics
+            self.assertGreater(m.atm_iv_near, 0.0)
+            self.assertLess(m.atm_iv_near, 3.0)   # < 300% — сторожок від сміття
+            self.assertGreater(m.atm_iv_term_days, 0.0)
+
     def test_reports_render(self):
         op = self.ops[0]
         surface = next(iter(self.surfaces.values()))[1]

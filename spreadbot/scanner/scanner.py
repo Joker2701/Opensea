@@ -179,6 +179,12 @@ class Scanner:
                 if res is None:
                     continue
                 res.metrics.flags = list(view.flags) + list(cand.tags)
+                # довідкова інфа: ATM IV на найближчому тенорі (proxy для
+                # "поточного вол-режиму" з гайду — нижче IV традиційно
+                # читають як спокійніші умови, зручніші для входу)
+                near_t = surface.slices[0].t
+                res.metrics.atm_iv_near = surface.atm(near_t)
+                res.metrics.atm_iv_term_days = near_t * 365.0
                 if res.metrics.edge_pp < self.cfg.scan.min_net_edge_pp:
                     continue
                 ops.append(
