@@ -118,3 +118,93 @@ class TestBotMenu(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestPositionTracking(unittest.TestCase):
+    """Кнопка «взяв позицію» -> запис у БД -> нагадування при наближенні
+    до порогу. Опортьюніті беремо з офлайн-сканера (реальний об'єкт, не мок)."""
+
+    def setUp(self):
+        self.tmp = tempfile.NamedTemporaryFile(suffix=".sqlite", delete=False)
+        self.tmp.close()
+        self.store = Storage(self.tmp.name)
+        self.store.set_owner_chat_id("42")
+        self.bot = TelegramBot("dummy-token", self.store, Config())
+        self.bot._answer_callback = lambda *a, **k: None
+
+        from spreadbot.adapters.offline import FIXTURE_DIR, offline_deribit, offline_polymarket
+        from spreadbot.config import Config as _Config
+        from spreadbot.scanner.scanner import Scanner
+
+        cfg = _Config()
+        cfg.offline = True
+        cfg.scan.assets = ["ETH"]
+        cfg.scan.min_days = 1
+        pm = offline_polymarket(os.path.join(FIXTURE_DIR, "polymarket_crypto.json"))
+        dr = offline_deribit(os.path.join(FIXTURE_DIR, "deribit_eth.json"))
+        ops, self.surfaces = Scanner([pm], [dr], cfg).run_with_surfaces()
+        self.assertTrue(ops, "фікстура має видавати хоч одну можливість")
+        self.op = ops[0]
+
+    def tearDown(self):
+        self.store.close()
+        os.unlink(self.tmp.name)
+
+    def test_take_button_opens_position(self):
+        h = self.bot._cache_op(self.op)
+        cq = {"id": "cb", "message": {"chat": {"id": 42}, "message_id": 1}, "data": f"take:{h}"}
+        sent = []
+        self.bot.send = lambda *a, **k: sent.append(a)
+        self.bot._handle_callback(cq)
+
+        rows = self.store.list_open_positions("42")
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["asset"], self.op.structure.prediction.market.claim.asset)
+        self.assertTrue(any("Збережено як позиція" in s[1] for s in sent))
+
+    def test_take_with_unknown_hash_is_graceful(self):
+        cq = {"id": "cb", "message": {"chat": {"id": 42}, "message_id": 1}, "data": "take:doesnotexist"}
+        sent = []
+        self.bot.send = lambda *a, **k: sent.append(a)
+        self.bot._handle_callback(cq)
+        self.assertEqual(self.store.list_open_positions("42"), [])
+        self.assertTrue(any("застаріла" in s[1] for s in sent))
+
+    def test_close_button_closes_position(self):
+        pos_id = self.bot._open_position_from_op("42", self.op)
+        cq = {"id": "cb", "message": {"chat": {"id": 42}, "message_id": 1},
+              "data": f"close_pos:{pos_id}"}
+        self.bot.send = lambda *a, **k: None
+        self.bot._handle_callback(cq)
+        self.assertEqual(self.store.list_open_positions("42"), [])
+
+    def test_proximity_check_warns_when_close_to_threshold(self):
+        pos_id = self.bot._open_position_from_op("42", self.op)
+        claim = self.op.structure.prediction.market.claim
+        # підміняємо спот на сам поріг -> це має вважатись "торкнулось"
+        fake_surfaces = {}
+        for (asset, venue), (chain, surface) in self.surfaces.items():
+            chain.spot = claim.threshold if asset == claim.asset else chain.spot
+            fake_surfaces[(asset, venue)] = (chain, surface)
+
+        sent = []
+        self.bot.send = lambda *a, **k: sent.append(a)
+        self.bot._check_position_proximity("42", fake_surfaces)
+        self.assertTrue(any("Час продавати опціон" in s[1] for s in sent))
+
+        # повторний виклик одразу — під кулдауном, дублю не шлемо
+        sent.clear()
+        self.bot._check_position_proximity("42", fake_surfaces)
+        self.assertEqual(sent, [])
+
+    def test_positions_command_lists_open(self):
+        self.bot._open_position_from_op("42", self.op)
+        sent = []
+        self.bot.send = lambda *a, **k: sent.append(a)
+        self.bot._cmd_positions("42")
+        self.assertEqual(len(sent), 1)
+        self.assertIn(self.op.structure.prediction.market.claim.asset, sent[0][1])
+
+
+if __name__ == "__main__":
+    unittest.main()

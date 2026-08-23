@@ -72,7 +72,7 @@ class TestScenarios(unittest.TestCase):
 class TestSizing(unittest.TestCase):
     def test_lot_rounding_preserves_leg_ratio(self):
         now, chain, surface, market = _setup()
-        cand = build_candidates(market, chain, strike_ratios=[1.05])[0]
+        cand = build_candidates(market, chain, strike_ratios=[0.65])[0]
         cfg = SizingConfig(capital_usd=10_000)
         st = build_structure(
             cand, 0.7, 25_000, chain.spot, cfg,
@@ -85,7 +85,16 @@ class TestSizing(unittest.TestCase):
         self.assertAlmostEqual(qty / st.prediction.size * 1000, 0.7, places=6)
 
     def test_capital_nets_short_leg_credit(self):
-        now, chain, surface, market = _setup()
+        # Спред тепер генерується лише для at-expiry ринків (для touch —
+        # небезпечний через ранній вихід і вимкнений повністю, див.
+        # constructors.py). Беремо ринок "above_at_expiry" з фікстури.
+        now, chain, surface, _ = _setup()
+        pm = offline_polymarket(os.path.join(FIXTURE_DIR, "polymarket_crypto.json"))
+        market = next(
+            m for m in pm.list_markets(assets=["ETH"], min_days=1, max_days=2000)
+            if m.claim.kind.value == "above_at_expiry"
+        )
+        pm.load_books(market)
         spreads = [c for c in build_candidates(market, chain) if len(c.options) == 2]
         self.assertTrue(spreads)
         cfg = SizingConfig()
@@ -100,7 +109,7 @@ class TestSizing(unittest.TestCase):
     def test_unwind_policy_beats_hold_on_tail(self):
         """Головна теза бота: хедж працює лише якщо опціон продають на бар'єрі."""
         now, chain, surface, market = _setup()
-        cand = [c for c in build_candidates(market, chain, strike_ratios=[1.05])
+        cand = [c for c in build_candidates(market, chain, strike_ratios=[0.65])
                 if len(c.options) == 1][0]
         cfg = SizingConfig()
         st = build_structure(
@@ -270,3 +279,50 @@ class TestDownsideBoundedByFriction(unittest.TestCase):
         # або (якщо все ж знайшлось) worst_return все одно >= 0
         if res is not None:
             self.assertGreaterEqual(res.metrics.worst_return, -1e-6)
+
+
+class TestAtExpirySafety(unittest.TestCase):
+    """At-expiry ринки (не тільки touch) теж можуть проходити гарантію
+    worst>=0 — опціон і ставка резолвляться в один день, тому спред тут
+    безпечний (на відміну від touch, де рання розхеджа коштує дорожче за
+    інтринсик). Фікстурний at-expiry ринок сам по собі не має достатнього
+    едж для жодної конструкції (перевірено вручну) — тому тут підставляємо
+    трохи дешевшу ставку, щоб довести, що МЕХАНІЗМ працює, коли цифри
+    сходяться, а не тільки для touch-ринків.
+    """
+
+    def test_favorable_at_expiry_market_finds_zero_loss_structure(self):
+        now, chain, surface, _ = _setup()
+        pm = offline_polymarket(os.path.join(FIXTURE_DIR, "polymarket_crypto.json"))
+        market = next(
+            m for m in pm.list_markets(assets=["ETH"], min_days=1, max_days=2000)
+            if m.claim.kind.value == "above_at_expiry"
+        )
+        pm.load_books(market)
+
+        def book(price, depth=3000, n=5, tick=0.005):
+            return OrderBook(
+                bids=[Level(round(price - tick * (i + 1), 4), depth * (i + 1)) for i in range(n)],
+                asks=[Level(round(price + tick * i, 4), depth * (i + 1)) for i in range(n)],
+            )
+
+        market.no_book = book(0.40)   # штучно дешевша ставка NO
+        market.yes_book = book(0.60)
+
+        scs = build_scenarios(market.claim, surface, now, n=60, policy="unwind")
+        fn = make_pnl_fn(market.claim, surface, now, 0.01)
+        cfg = SizingConfig(capital_usd=10_000, unwind_cost_frac=0.01)
+        pf, of = DEFAULT_PREDICTION_FEES["polymarket"], DEFAULT_OPTION_FEES["deribit"]
+        days = market.claim.days_to_deadline(now)
+
+        found = 0
+        for cand in build_candidates(market, chain):
+            res = solve(
+                cand, scs, chain.spot, days, cfg, pf, of,
+                market_prob=0.60, model_prob=0.0, pnl_fn=fn,
+            )
+            if res is None:
+                continue
+            found += 1
+            self.assertGreaterEqual(res.metrics.worst_return, -1e-6)
+        self.assertGreater(found, 0, "механізм at-expiry має знаходити вилку при сприятливих цифрах")

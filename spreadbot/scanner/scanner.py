@@ -188,11 +188,17 @@ class Scanner:
 
     # ------------------------------------------------------------------ #
     def run(self) -> list[Opportunity]:
+        return self.run_with_surfaces()[0]
+
+    def run_with_surfaces(self) -> tuple[list[Opportunity], dict]:
+        """Те саме, що run(), але додатково повертає завантажені поверхні
+        волатильності — щоб зовнішній код (напр. моніторинг позицій у
+        Telegram-боті) міг узяти поточний спот, не сканувавши ринок вдруге."""
         surfaces = self.load_surfaces()
         if not surfaces:
             log.error("жодної опціонної поверхні — сканування неможливе")
-            return []
+            return [], surfaces
         views = self.screen(surfaces)
         log.info("ринків з еджем >= %.1f в.п.: %d", self.cfg.scan.min_edge_pp, len(views))
         ops = self.build(views, surfaces)
-        return ops[: self.cfg.scan.top_n]
+        return ops[: self.cfg.scan.top_n], surfaces

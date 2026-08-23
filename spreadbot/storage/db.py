@@ -39,12 +39,15 @@ CREATE INDEX IF NOT EXISTS idx_snap_src_ts ON snapshots(source, ts);
 CREATE TABLE IF NOT EXISTS positions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     opened_at TEXT NOT NULL,
+    chat_id TEXT NOT NULL,
     key TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'open',
+    asset TEXT, claim_kind TEXT, threshold REAL, deadline TEXT,
     capital REAL,
     payload TEXT NOT NULL,
     closed_at TEXT, realized_pnl REAL
 );
+CREATE INDEX IF NOT EXISTS idx_pos_status ON positions(status, chat_id);
 
 -- Налаштування Telegram-бота і його стан (керування з телефону).
 CREATE TABLE IF NOT EXISTS bot_state (
@@ -204,6 +207,56 @@ class Storage:
             "INSERT INTO sent_alerts (key, chat_id, ts) VALUES (?, ?, ?) "
             "ON CONFLICT(key, chat_id) DO UPDATE SET ts = excluded.ts",
             (key, chat_id, now),
+        )
+        self.conn.commit()
+
+    # ------------------------------------------------------------------ #
+    # Позиції: користувач підтвердив «я взяв це» -> бот пам'ятає і стежить
+    # ------------------------------------------------------------------ #
+    def open_position(
+        self,
+        chat_id: str,
+        key: str,
+        asset: str,
+        claim_kind: str,
+        threshold: float,
+        deadline: str,
+        capital: float,
+        payload: dict,
+    ) -> int:
+        cur = self.conn.execute(
+            "INSERT INTO positions (opened_at,chat_id,key,status,asset,claim_kind,"
+            "threshold,deadline,capital,payload) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (
+                dt.datetime.now(dt.timezone.utc).isoformat(),
+                chat_id, key, "open", asset, claim_kind, threshold, deadline,
+                capital, json.dumps(payload, default=str),
+            ),
+        )
+        self.conn.commit()
+        return cur.lastrowid
+
+    def list_open_positions(self, chat_id: Optional[str] = None) -> list[sqlite3.Row]:
+        self.conn.row_factory = sqlite3.Row
+        if chat_id is None:
+            return self.conn.execute(
+                "SELECT * FROM positions WHERE status='open' ORDER BY id"
+            ).fetchall()
+        return self.conn.execute(
+            "SELECT * FROM positions WHERE status='open' AND chat_id=? ORDER BY id",
+            (chat_id,),
+        ).fetchall()
+
+    def get_position(self, position_id: int) -> Optional[sqlite3.Row]:
+        self.conn.row_factory = sqlite3.Row
+        return self.conn.execute(
+            "SELECT * FROM positions WHERE id=?", (position_id,)
+        ).fetchone()
+
+    def close_position(self, position_id: int, realized_pnl: Optional[float] = None) -> None:
+        self.conn.execute(
+            "UPDATE positions SET status='closed', closed_at=?, realized_pnl=? WHERE id=?",
+            (dt.datetime.now(dt.timezone.utc).isoformat(), realized_pnl, position_id),
         )
         self.conn.commit()
 

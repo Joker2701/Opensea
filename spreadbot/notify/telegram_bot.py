@@ -13,7 +13,10 @@
 from __future__ import annotations
 
 import copy
+import datetime as dt
+import hashlib
 import html
+import json
 import logging
 import time
 from typing import Optional
@@ -33,6 +36,15 @@ from ..storage.settings_schema import (
 from ..util.http import HttpClient
 
 log = logging.getLogger(__name__)
+
+#: скільки останніх алертів тримати в пам'яті, щоб кнопка "взяв позицію"
+#: під ними ще працювала (старіші — не критично, бот про них і так
+#: писав повний текст, просто кнопка після рестарту/переповнення кеша
+#: підкаже скористатись /scan заново)
+OP_CACHE_SIZE = 300
+
+#: наскільки близько ціна має підійти до порогу, щоб надіслати нагадування
+PROXIMITY_WARN_FRAC = 0.08
 
 API = "https://api.telegram.org"
 
@@ -66,6 +78,8 @@ class TelegramBot:
         self.cfg = cfg
         self._last_scan_ts = 0.0
         self._last_ops: list[Opportunity] = []
+        self._op_cache: dict[str, Opportunity] = {}   # hash(op.key) -> Opportunity
+        self._last_spot: dict[str, float] = {}         # asset -> останній відомий спот
 
     # ------------------------------------------------------------------ #
     # Низькорівневий Telegram API
@@ -77,8 +91,6 @@ class TelegramBot:
         params = {"chat_id": chat_id, "text": text, "parse_mode": "HTML",
                   "disable_web_page_preview": True}
         if keyboard is not None:
-            import json
-
             params["reply_markup"] = json.dumps({"inline_keyboard": keyboard})
         try:
             self._call("sendMessage", **params)
@@ -93,8 +105,6 @@ class TelegramBot:
 
     def _edit_menu(self, chat_id: str, message_id: int) -> None:
         settings = self.store.get_settings()
-        import json
-
         try:
             self._call(
                 "editMessageText",
@@ -174,6 +184,117 @@ class TelegramBot:
             return True
         return self._is_owner(chat_id)
 
+    # ------------------------------------------------------------------ #
+    # Позиції: "я взяв це" -> бот пам'ятає і нагадує, коли ціна близько
+    # ------------------------------------------------------------------ #
+    @staticmethod
+    def _op_hash(op: Opportunity) -> str:
+        return hashlib.sha256(op.key.encode()).hexdigest()[:12]
+
+    def _cache_op(self, op: Opportunity) -> str:
+        h = self._op_hash(op)
+        self._op_cache[h] = op
+        if len(self._op_cache) > OP_CACHE_SIZE:
+            # найпростіший FIFO: прибираємо найстаріший ключ
+            oldest = next(iter(self._op_cache))
+            self._op_cache.pop(oldest, None)
+        return h
+
+    def _open_position_from_op(self, chat_id: str, op: Opportunity) -> int:
+        st, m = op.structure, op.metrics
+        claim = st.prediction.market.claim
+        payload = {
+            "name": st.name,
+            "prediction": {
+                "venue": st.prediction.market.venue,
+                "outcome": st.prediction.outcome.value,
+                "size": st.prediction.size,
+                "price": st.prediction.price,
+                "url": st.prediction.market.url,
+            },
+            "options": [
+                {"symbol": l.quote.symbol, "venue": l.quote.venue, "side": l.side.value,
+                 "qty": l.qty, "price": l.price}
+                for l in st.options
+            ],
+            "raw_title": claim.raw_title,
+        }
+        return self.store.open_position(
+            chat_id=chat_id,
+            key=op.key,
+            asset=claim.asset,
+            claim_kind=claim.kind.value,
+            threshold=claim.threshold,
+            deadline=claim.deadline.isoformat(),
+            capital=m.capital,
+            payload=payload,
+        )
+
+    def _position_line(self, row) -> str:
+        deadline = dt.datetime.fromisoformat(row["deadline"])
+        days_left = max((deadline - dt.datetime.now(dt.timezone.utc)).total_seconds() / 86400.0, 0.0)
+        spot = self._last_spot.get(row["asset"])
+        payload = json.loads(row["payload"])
+        title = payload.get("raw_title") or payload.get("name") or row["key"]
+        if spot is None:
+            dist = "спот ще не завантажено"
+        else:
+            frac = (spot - row["threshold"]) / row["threshold"]
+            touched = (
+                (row["claim_kind"] in ("touch_above", "above_at_expiry") and spot >= row["threshold"])
+                or (row["claim_kind"] in ("touch_below", "below_at_expiry") and spot <= row["threshold"])
+            )
+            if touched:
+                dist = "🔴 ЦІНА ДІЙШЛА ДО ПОРОГУ — час продавати опціон"
+            elif abs(frac) < PROXIMITY_WARN_FRAC:
+                dist = f"🟡 близько до порогу ({frac:+.1%} від нього)"
+            else:
+                dist = f"🟢 спот {spot:,.0f} ({frac:+.1%} від порогу {row['threshold']:,.0f})"
+        return (
+            f"#{row['id']} {row['asset']} {row['claim_kind']} поріг {row['threshold']:,.0f}, "
+            f"{days_left:.0f} дн. лишилось — {dist}\n  {title[:70]}"
+        )
+
+    def _check_position_proximity(self, chat_id: str, surfaces: dict) -> None:
+        """Після кожного сканування звіряємо відкриті позиції з поточним
+        спотом і нагадуємо, коли пора продавати опціон (умова B точно
+        рахується НА ПОРОЗІ — саме туди й веде це нагадування)."""
+        spots: dict[str, float] = {}
+        for (asset, _venue), (chain, _surface) in surfaces.items():
+            spots[asset] = chain.spot
+        self._last_spot.update(spots)
+
+        for row in self.store.list_open_positions(chat_id):
+            spot = spots.get(row["asset"])
+            if spot is None:
+                continue
+            touched = (
+                (row["claim_kind"] in ("touch_above", "above_at_expiry") and spot >= row["threshold"])
+                or (row["claim_kind"] in ("touch_below", "below_at_expiry") and spot <= row["threshold"])
+            )
+            close = abs((spot - row["threshold"]) / row["threshold"]) < PROXIMITY_WARN_FRAC
+            if not (touched or close):
+                continue
+            alert_key = f"pos:{row['id']}:{'touch' if touched else 'near'}"
+            cooldown = 15.0 if touched else self.cfg.notify.cooldown_minutes
+            if self.store.was_alerted_recently(alert_key, chat_id, cooldown):
+                continue
+            payload = json.loads(row["payload"])
+            title = payload.get("raw_title") or payload.get("name") or row["key"]
+            if touched:
+                text = (
+                    f"🔴 <b>Позиція #{row['id']}</b>: ціна дійшла до порогу "
+                    f"{row['threshold']:,.0f} ({row['asset']}={spot:,.0f}).\n"
+                    f"{title}\nЧас продавати опціон (умова B розрахована саме на це)."
+                )
+            else:
+                text = (
+                    f"🟡 <b>Позиція #{row['id']}</b>: ціна наближається до порогу "
+                    f"{row['threshold']:,.0f} ({row['asset']}={spot:,.0f}).\n{title}"
+                )
+            self.send(chat_id, text)
+            self.store.mark_alerted(alert_key, chat_id)
+
     def handle_update(self, update: dict) -> None:
         if "callback_query" in update:
             self._handle_callback(update["callback_query"])
@@ -191,8 +312,10 @@ class TelegramBot:
                 chat_id,
                 "Привіт! Я шукаю вилки опціон × предикт-маркет і рахую дві умови "
                 "стратегії (A і B) у доларах. Ніяких угод сам не відкриваю — "
-                "тільки сигналю.\n\n/menu — керування\n/scan — сканувати зараз\n"
-                "/list — останні знахідки\n/status — стан",
+                "тільки сигналю. Під кожним алертом є кнопка «✅ Взяв цю позицію» — "
+                "натиснете, коли реально відкриєте угоду, і я нагадаю, коли ціна "
+                "підійде до порогу.\n\n/menu — керування\n/scan — сканувати зараз\n"
+                "/list — останні знахідки\n/positions — відкриті позиції\n/status — стан",
             )
             self._send_menu(chat_id)
             return
@@ -208,6 +331,8 @@ class TelegramBot:
             self._run_scan_and_alert(chat_id, manual=True)
         elif text.startswith("/list"):
             self._cmd_list(chat_id)
+        elif text.startswith("/positions"):
+            self._cmd_positions(chat_id)
         elif text.startswith("/pause"):
             self.store.update_settings(paused=True)
             self.send(chat_id, "На паузі. /resume — відновити.")
@@ -218,8 +343,9 @@ class TelegramBot:
             self.send(
                 chat_id,
                 "/menu — налаштування\n/scan — сканувати зараз\n"
-                "/list — останні знахідки\n/status — стан\n"
-                "/pause, /resume — призупинити чи відновити",
+                "/list — останні знахідки\n/positions — відкриті позиції "
+                "(натисніть «✅ Взяв цю позицію» під алертом, щоб додати)\n"
+                "/status — стан\n/pause, /resume — призупинити чи відновити",
             )
 
     def _send_menu(self, chat_id: str) -> None:
@@ -244,6 +370,20 @@ class TelegramBot:
             return
         if data == "scan:now":
             self._run_scan_and_alert(chat_id, manual=True)
+            return
+        if data.startswith("take:"):
+            h = data.split(":", 1)[1]
+            op = self._op_cache.get(h)
+            if op is None:
+                self.send(chat_id, "Ця можливість застаріла (бот перезапускався або кеш переповнився) — спробуйте /scan ще раз.")
+                return
+            pos_id = self._open_position_from_op(chat_id, op)
+            self.send(chat_id, f"✅ Збережено як позиція #{pos_id}. /positions — перелік і статус.")
+            return
+        if data.startswith("close_pos:"):
+            pos_id = int(data.split(":", 1)[1])
+            self.store.close_position(pos_id)
+            self.send(chat_id, f"Позиція #{pos_id} закрита.")
             return
         if data.startswith("pause:"):
             self.store.update_settings(paused=data.endswith(":1"))
@@ -272,11 +412,13 @@ class TelegramBot:
     def _cmd_status(self, chat_id: str) -> None:
         s = self.store.get_settings()
         ago = "ще не сканував" if self._last_scan_ts == 0 else f"{(time.time() - self._last_scan_ts) / 60:.0f} хв тому"
+        open_count = len(self.store.list_open_positions(chat_id))
         self.send(
             chat_id,
             f"Статус: {'⏸ на паузі' if s['paused'] else '▶️ активний'}\n"
             f"Останнє сканування: {ago}\n"
-            f"Знахідок минулого разу: {len(self._last_ops)}",
+            f"Знахідок минулого разу: {len(self._last_ops)}\n"
+            f"Відкритих позицій: {open_count} (/positions)",
         )
 
     def _cmd_list(self, chat_id: str) -> None:
@@ -291,6 +433,18 @@ class TelegramBot:
                 f"очік. {m.ev_apr:+.0%} річних, капітал ${m.capital:,.0f}"
             )
         self.send(chat_id, "<pre>" + html.escape("\n".join(lines)) + "</pre>")
+
+    def _cmd_positions(self, chat_id: str) -> None:
+        rows = self.store.list_open_positions(chat_id)
+        if not rows:
+            self.send(chat_id, "Відкритих позицій немає. Кнопка «✅ Взяв цю позицію» під алертом додає сюди.")
+            return
+        for row in rows:
+            self.send(
+                chat_id,
+                "<pre>" + html.escape(self._position_line(row)) + "</pre>",
+                keyboard=[[{"text": "❌ Закрити", "callback_data": f"close_pos:{row['id']}"}]],
+            )
 
     # ------------------------------------------------------------------ #
     # Сканування
@@ -317,7 +471,7 @@ class TelegramBot:
 
         try:
             pred, opts = _adapters(cfg)
-            ops = Scanner(pred, opts, cfg).run()
+            ops, surfaces = Scanner(pred, opts, cfg).run_with_surfaces()
         except Exception as exc:  # noqa: BLE001
             log.exception("сканування впало")
             if manual:
@@ -326,6 +480,9 @@ class TelegramBot:
 
         self._last_ops = ops
         self._last_scan_ts = time.time()
+
+        if surfaces:
+            self._check_position_proximity(chat_id, surfaces)
 
         if not ops:
             if manual:
@@ -338,7 +495,12 @@ class TelegramBot:
                 op.key, chat_id, self.cfg.notify.cooldown_minutes
             ):
                 continue
-            self.send(chat_id, f"<pre>{html.escape(opportunity_card(op))}</pre>")
+            h = self._cache_op(op)
+            self.send(
+                chat_id,
+                f"<pre>{html.escape(opportunity_card(op))}</pre>",
+                keyboard=[[{"text": "✅ Взяв цю позицію", "callback_data": f"take:{h}"}]],
+            )
             self.store.mark_alerted(op.key, chat_id)
             new_count += 1
 
