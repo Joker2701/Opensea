@@ -27,6 +27,7 @@ from ..pricing.digital import (
     prob_touch_and_finish_below,
     touch_time_buckets,
 )
+from ..pricing.race import simulate_race
 from ..pricing.surface import VolSurface
 
 
@@ -58,6 +59,9 @@ def build_scenarios(
     використовують трохи різні sigma (на бар'єрі vs на страйку).
     """
     now = now or dt.datetime.now(dt.timezone.utc)
+    if claim.is_race:
+        return _build_race_scenarios(claim, surface, now, horizon_years, n_touch_times)
+
     t = horizon_years if horizon_years is not None else max(claim.years_to_deadline(now), 1e-6)
     f = surface.forward(t)
     spot = surface.spot
@@ -145,6 +149,135 @@ def build_scenarios(
         for s in scenarios:
             s.prob /= total
     return scenarios
+
+
+def _build_race_scenarios(
+    claim: EventClaim,
+    surface: VolSurface,
+    now: dt.datetime,
+    horizon_years: Optional[float],
+    n_touch_times: int,
+    mc_paths: int = 8_000,
+    mc_steps: int = 200,
+    n_price_buckets: int = 24,
+) -> list[Scenario]:
+    """Сценарії для RACE_*: гонка вирішується в момент, коли ОДИН з двох
+    бар'єрів спрацював — тому тут немає "hold vs unwind" вибору, як для
+    touch: подія за визначенням про ПОРЯДОК торкань, тому кожен сценарій,
+    де щось торкнулось, за замовчуванням "unwind" (ціна опціона рахується
+    на момент і рівень торкання).
+
+    Ймовірності й моменти торкань беремо прямо з Монте-Карло (pricing/race.py)
+    — не будуємо окрему аналітичну сітку: MC вже дає точний спільний
+    розподіл (переможець, час, рівень), а рахувати те саме двома методами
+    і звіряти означало б подвійну роботу без додаткової гарантії якості.
+    """
+    t = horizon_years if horizon_years is not None else max(claim.years_to_deadline(now), 1e-6)
+    spot = surface.spot
+    f = surface.forward(t)
+    mu = math.log(f / spot) / t if t > 0 else 0.0
+
+    other = claim.race_other_threshold
+    if other is None:
+        raise ValueError("RACE_* без другого бар'єра (race_other_threshold)")
+    yes_is_upper = claim.kind is ClaimKind.RACE_UPPER_FIRST
+    upper, lower = (claim.threshold, other) if yes_is_upper else (other, claim.threshold)
+    sigma = surface.iv(claim.threshold, t)
+
+    res = simulate_race(spot, lower, upper, t, sigma, mu, n_paths=mc_paths, n_steps=mc_steps)
+    yes_winner = "upper" if yes_is_upper else "lower"
+
+    def bucket_by_time(outcomes, barrier_level, label_yes: bool) -> list[Scenario]:
+        if not outcomes:
+            return []
+        taus = sorted(o.tau_years for o in outcomes)
+        lo_t, hi_t = taus[0], taus[-1]
+        if hi_t <= lo_t:
+            hi_t = lo_t + 1e-6
+        edges = [lo_t + (hi_t - lo_t) * ((i / n_touch_times) ** 1.5) for i in range(n_touch_times + 1)]
+        edges[-1] = hi_t + 1e-9
+        out = []
+        for i in range(n_touch_times):
+            in_bucket = [o for o in outcomes if edges[i] <= o.tau_years < edges[i + 1]]
+            if not in_bucket:
+                continue
+            avg_tau = sum(o.tau_years for o in in_bucket) / len(in_bucket)
+            prob = len(in_bucket) / mc_paths
+            out.append(Scenario(
+                label=f"{'YES' if label_yes else 'NO'} бар'єр через {avg_tau*365:.0f}д",
+                yes_wins=label_yes, s_final=barrier_level, prob=prob,
+                tau_years=avg_tau, unwind=True,
+            ))
+        return out
+
+    yes_hits = [o for o in res.outcomes if o.winner == yes_winner]
+    no_hits = [o for o in res.outcomes if o.winner != yes_winner and o.winner != "neither"]
+    neither = [o for o in res.outcomes if o.winner == "neither"]
+
+    scenarios = bucket_by_time(yes_hits, claim.threshold, True)
+    scenarios += bucket_by_time(no_hits, other, False)
+
+    if neither:
+        prices = sorted(o.s_final for o in neither)
+        lo_p, hi_p = math.log(prices[0]), math.log(prices[-1])
+        if hi_p <= lo_p:
+            hi_p = lo_p + 1e-6
+        step = (hi_p - lo_p) / n_price_buckets
+        for i in range(n_price_buckets):
+            e_lo, e_hi = math.exp(lo_p + step * i), math.exp(lo_p + step * (i + 1))
+            in_bucket = [o for o in neither if e_lo <= o.s_final < e_hi or
+                         (i == n_price_buckets - 1 and o.s_final <= e_hi)]
+            if not in_bucket:
+                continue
+            mid = sum(o.s_final for o in in_bucket) / len(in_bucket)
+            prob = len(in_bucket) / mc_paths
+            # "жодного до дедлайну" -> НАШ бар'єр не був першим -> NO;
+            # термінальний сценарій (unwind=False): держимо опціон до
+            # реального закінчення терміну, без дострокового виходу
+            scenarios.append(Scenario(
+                label=f"NO (жодного) S_T≈{mid:,.0f}", yes_wins=False, s_final=mid, prob=prob,
+            ))
+
+    total = sum(s.prob for s in scenarios)
+    if total > 0:
+        for s in scenarios:
+            s.prob /= total
+    return scenarios
+
+
+def make_race_pnl_fn(
+    claim: EventClaim,
+    surface: VolSurface,
+    now: Optional[dt.datetime] = None,
+    unwind_cost_frac: float = 0.01,
+) -> Callable[[Structure, Scenario], float]:
+    """P&L для RACE_*: на відміну від make_pnl_fn (де unwind завжди
+    означає "НАШ бар'єр торкнувся, ставка програла"), тут unwind-сценарій
+    може означати і програш (наш бар'єр перший), і ВИГРАШ (інший бар'єр
+    перший) ставки — тому bet-нога оцінюється явно з sc.yes_wins, а не
+    через фіксоване "touched=True", як у touch-версії.
+    """
+    now = now or dt.datetime.now(dt.timezone.utc)
+
+    def pnl(structure: Structure, sc: Scenario) -> float:
+        leg = structure.prediction
+        bet_won = sc.yes_wins if leg.outcome.value == "yes" else not sc.yes_wins
+        bet_value = leg.size if bet_won else 0.0
+
+        if not sc.unwind or sc.tau_years is None:
+            # "жодного до дедлайну": ставка вже вирішена (NO виграла), але
+            # опціон може мати залишковий термін до СВОЄЇ експірації (якщо
+            # вона пізніше за дедлайн ставки) — оцінюємо його на момент
+            # дедлайну, а не як миттєвий інтринсик (той занижував би вартість)
+            days_at_deadline = claim.years_to_deadline(now) * 365.0
+            opt_value = _reprice_option_legs(structure, surface, days_at_deadline, sc.s_final, now)
+            return bet_value + opt_value - structure.capital
+
+        opt_value = _reprice_option_legs(structure, surface, sc.tau_years * 365.0, sc.s_final, now)
+        gross = bet_value + opt_value
+        return gross - structure.capital - abs(opt_value) * unwind_cost_frac
+
+    return pnl
 
 
 def _touch_below_and_finish_above(
@@ -255,6 +388,37 @@ class MtmPoint:
     touched: bool
 
 
+def _reprice_option_legs(
+    structure: Structure,
+    surface: VolSurface,
+    days_from_now: float,
+    spot: float,
+    now: dt.datetime,
+) -> float:
+    """Чиста вартість опціонних ніг у момент ЗАРАЗ+days при заданому споті.
+
+    Виокремлено з mark_to_market: ця частина не залежить від типу claim
+    (touch/at-expiry/race) — потрібна кільком pnl-функціям однаково.
+    Те саме припущення sticky-strike, що й у mark_to_market.
+    """
+    value = 0.0
+    for ol in structure.options:
+        t_left = max(ol.quote.years_to_expiry(now) - days_from_now / 365.0, 0.0)
+        sign = 1.0 if ol.side.value == "buy" else -1.0
+        if t_left <= 0:
+            px = max(spot - ol.quote.strike, 0.0) if ol.quote.opt_type.value == "call" else max(
+                ol.quote.strike - spot, 0.0
+            )
+        else:
+            sig = surface.iv(ol.quote.strike, t_left)
+            basis = surface.forward(t_left) / surface.spot
+            px = black76(
+                spot * basis, ol.quote.strike, t_left, sig, ol.quote.opt_type.value == "call"
+            )
+        value += sign * ol.qty * px
+    return value
+
+
 def mark_to_market(
     structure: Structure,
     claim: EventClaim,
@@ -297,22 +461,7 @@ def mark_to_market(
 
     unit = yes_now if leg.outcome.value == "yes" else 1.0 - yes_now
     value = leg.size * unit
-
-    # --- опціонні ноги ---
-    for ol in structure.options:
-        t_left = max(ol.quote.years_to_expiry(now) - days_from_now / 365.0, 0.0)
-        sign = 1.0 if ol.side.value == "buy" else -1.0
-        if t_left <= 0:
-            px = max(spot - ol.quote.strike, 0.0) if ol.quote.opt_type.value == "call" else max(
-                ol.quote.strike - spot, 0.0
-            )
-        else:
-            sig = surface.iv(ol.quote.strike, t_left)
-            basis = surface.forward(t_left) / surface.spot
-            px = black76(
-                spot * basis, ol.quote.strike, t_left, sig, ol.quote.opt_type.value == "call"
-            )
-        value += sign * ol.qty * px
+    value += _reprice_option_legs(structure, surface, days_from_now, spot, now)
 
     return MtmPoint(
         days_from_now=days_from_now,

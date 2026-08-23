@@ -39,6 +39,11 @@ class ClaimKind(str, Enum):
     ABOVE_AT_EXPIRY = "above_at_expiry"  # "чи буде ціна > X станом на дату D"
     BELOW_AT_EXPIRY = "below_at_expiry"
     RANGE_AT_EXPIRY = "range_at_expiry"  # "чи буде ціна між X та Y на дату D"
+    #: "яка ціна буде раніше — X чи Y" (гонка до одного з двох бар'єрів).
+    #: `threshold` — бар'єр, торкання якого ПЕРШИМ означає YES;
+    #: `race_other_threshold` — другий (протилежний) бар'єр гонки.
+    RACE_UPPER_FIRST = "race_upper_first"   # YES, якщо ВЕРХНІЙ бар'єр першим
+    RACE_LOWER_FIRST = "race_lower_first"   # YES, якщо НИЖНІЙ бар'єр першим
 
 
 class Outcome(str, Enum):
@@ -112,6 +117,9 @@ class EventClaim:
     deadline: dt.datetime          # UTC, момент резолву
     window_start: Optional[dt.datetime] = None   # для TOUCH: з якого моменту рахують
     threshold_hi: Optional[float] = None         # для RANGE
+    #: для RACE_*: другий (протилежний) бар'єр гонки. `threshold` лишається
+    #: бар'єром, торкання якого ПЕРШИМ означає YES.
+    race_other_threshold: Optional[float] = None
     resolution_source: str = "unknown"           # "binance_1m_high", "coinbase_close", ...
     raw_title: str = ""
 
@@ -126,6 +134,10 @@ class EventClaim:
     def is_touch(self) -> bool:
         return self.kind in (ClaimKind.TOUCH_ABOVE, ClaimKind.TOUCH_BELOW)
 
+    @property
+    def is_race(self) -> bool:
+        return self.kind in (ClaimKind.RACE_UPPER_FIRST, ClaimKind.RACE_LOWER_FIRST)
+
     def resolves_yes(self, path_max: float, path_min: float, s_final: float) -> bool:
         """Чи резолвиться YES для заданої траєкторії (max/min/фінал)."""
         if self.kind is ClaimKind.TOUCH_ABOVE:
@@ -139,6 +151,15 @@ class EventClaim:
         if self.kind is ClaimKind.RANGE_AT_EXPIRY:
             hi = self.threshold_hi if self.threshold_hi is not None else math.inf
             return self.threshold <= s_final <= hi
+        if self.is_race:
+            # РЕЗУЛЬТАТ гонки залежить від ПОРЯДКУ торкань у часі, якого
+            # (max, min, фінал) не несуть — потрібна повна траєкторія
+            # (див. pricing/race.py). Це не «недороблено», а свідома межа
+            # цього спрощеного інтерфейсу.
+            raise NotImplementedError(
+                "resolves_yes() не визначає порядок торкань для RACE_* — "
+                "використовуйте pricing.race.simulate_race()"
+            )
         raise ValueError(self.kind)
 
 

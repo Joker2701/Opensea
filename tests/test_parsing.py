@@ -42,6 +42,42 @@ class TestParseTitle(unittest.TestCase):
         self.assertEqual(c.deadline, end)
 
 
+class TestRaceParsing(unittest.TestCase):
+    END = dt.datetime(2027, 1, 1, tzinfo=dt.timezone.utc)
+
+    def test_before_pattern(self):
+        c = parse_title("Will BTC hit $150,000 before $70,000?", end_date=self.END)
+        self.assertEqual(c.kind, ClaimKind.RACE_UPPER_FIRST)
+        self.assertEqual(c.threshold, 150_000.0)
+        self.assertEqual(c.race_other_threshold, 70_000.0)
+
+    def test_before_pattern_lower_first(self):
+        c = parse_title("Will BTC hit $70,000 before $150,000?", end_date=self.END)
+        self.assertEqual(c.kind, ClaimKind.RACE_LOWER_FIRST)
+        self.assertEqual(c.threshold, 70_000.0)
+        self.assertEqual(c.race_other_threshold, 150_000.0)
+
+    def test_or_first_pattern(self):
+        c = parse_title("BTC: $150k or $70k first?", end_date=self.END)
+        self.assertEqual(c.kind, ClaimKind.RACE_UPPER_FIRST)
+        self.assertEqual(c.threshold, 150_000.0)
+
+    def test_k_suffix_in_race(self):
+        c = parse_title("Will BTC hit $100k before it hits $70k?", end_date=self.END)
+        self.assertEqual(c.threshold, 100_000.0)
+        self.assertEqual(c.race_other_threshold, 70_000.0)
+
+    def test_race_does_not_shadow_ordinary_touch(self):
+        c = parse_title("Will Ethereum hit $4,000 by June 30, 2027?", end_date=self.END)
+        self.assertEqual(c.kind, ClaimKind.TOUCH_ABOVE)
+        self.assertIsNone(c.race_other_threshold)
+
+    def test_resolves_yes_not_implemented_for_race(self):
+        c = parse_title("Will BTC hit $150,000 before $70,000?", end_date=self.END)
+        with self.assertRaises(NotImplementedError):
+            c.resolves_yes(path_max=200_000, path_min=50_000, s_final=160_000)
+
+
 class TestClaimLogic(unittest.TestCase):
     def test_touch_resolution(self):
         c = parse_title("Will ETH hit $4,000 by June 30, 2027?")

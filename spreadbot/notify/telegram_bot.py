@@ -241,8 +241,8 @@ class TelegramBot:
         else:
             frac = (spot - row["threshold"]) / row["threshold"]
             touched = (
-                (row["claim_kind"] in ("touch_above", "above_at_expiry") and spot >= row["threshold"])
-                or (row["claim_kind"] in ("touch_below", "below_at_expiry") and spot <= row["threshold"])
+                (row["claim_kind"] in ("touch_above", "above_at_expiry", "race_upper_first") and spot >= row["threshold"])
+                or (row["claim_kind"] in ("touch_below", "below_at_expiry", "race_lower_first") and spot <= row["threshold"])
             )
             if touched:
                 dist = "🔴 ЦІНА ДІЙШЛА ДО ПОРОГУ — час продавати опціон"
@@ -269,8 +269,8 @@ class TelegramBot:
             if spot is None:
                 continue
             touched = (
-                (row["claim_kind"] in ("touch_above", "above_at_expiry") and spot >= row["threshold"])
-                or (row["claim_kind"] in ("touch_below", "below_at_expiry") and spot <= row["threshold"])
+                (row["claim_kind"] in ("touch_above", "above_at_expiry", "race_upper_first") and spot >= row["threshold"])
+                or (row["claim_kind"] in ("touch_below", "below_at_expiry", "race_lower_first") and spot <= row["threshold"])
             )
             close = abs((spot - row["threshold"]) / row["threshold"]) < PROXIMITY_WARN_FRAC
             if not (touched or close):

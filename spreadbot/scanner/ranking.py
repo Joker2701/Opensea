@@ -31,6 +31,10 @@ def score(op: Opportunity, min_liquidity_usd: float = 1_000.0) -> float:
             penalty *= 0.4
         elif flag.startswith("thin"):
             penalty *= 0.7
+        elif flag.startswith("verify_race_direction"):
+            # напрямок YES/NO для "яка ціна раніше" — регекс, вища ставка
+            # переплутати, ніж для звичайного touch; людина мусить звірити
+            penalty *= 0.5
     return (0.4 * edge + 0.4 * math.tanh(ret) + 0.2 * liq) * safety * penalty
 
 

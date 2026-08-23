@@ -13,7 +13,7 @@ from ..pricing.events import ModelProb, model_probability
 from ..pricing.surface import VolSurface
 from ..strategy.constructors import build_candidates
 from ..strategy.costs import DEFAULT_OPTION_FEES, DEFAULT_PREDICTION_FEES, OptionFees, PredictionFees
-from ..strategy.payoff import build_scenarios, make_pnl_fn
+from ..strategy.payoff import build_scenarios, make_pnl_fn, make_race_pnl_fn
 from ..strategy.sizing import solve
 from .ranking import rank
 
@@ -99,6 +99,13 @@ class Scanner:
                 flags = []
                 if model.extrapolated:
                     flags.append("extrapolated_iv")
+                if m.claim.is_race:
+                    # напрямок YES/NO для "яка ціна буде раніше" парситься
+                    # регексом з двома числами — вища ставка, ніж для
+                    # звичайного touch (де переплутати нема чим). Завжди
+                    # позначаємо, щоб людина звірила з реальними правилами
+                    # ринку перед тим, як довіряти едж.
+                    flags.append("verify_race_direction")
                 if self.cfg.risk.require_known_resolution_source and (
                     m.claim.resolution_source in ("", "unknown")
                 ):
@@ -145,11 +152,17 @@ class Scanner:
             scenarios = build_scenarios(
                 m.claim, surface, now, n=self.cfg.scan.scenario_points, policy=policy
             )
-            pnl_fn = (
-                make_pnl_fn(m.claim, surface, now, self.cfg.sizing.unwind_cost_frac)
-                if policy == "unwind"
-                else None
-            )
+            if m.claim.is_race:
+                # гонка завжди "unwind" за побудовою (немає сенсу "hold" —
+                # подія по своїй суті про порядок торкань, не про фінальну
+                # ціну), тому своя pnl-функція, не залежна від cfg.exit_policy
+                pnl_fn = make_race_pnl_fn(m.claim, surface, now, self.cfg.sizing.unwind_cost_frac)
+            else:
+                pnl_fn = (
+                    make_pnl_fn(m.claim, surface, now, self.cfg.sizing.unwind_cost_frac)
+                    if policy == "unwind"
+                    else None
+                )
             cands = build_candidates(
                 m,
                 chain,

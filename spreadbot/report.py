@@ -43,8 +43,9 @@ def opportunity_card(op: Opportunity) -> str:
         f"[{op.score:5.2f}] {st.name}   ({pm.market.venue} × "
         f"{st.options[0].quote.venue if st.options else '—'})",
         f"  ринок : {claim.raw_title or claim.kind.value}",
-        f"  подія : {claim.asset} {claim.kind.value} {claim.threshold:,.0f} до "
-        f"{claim.deadline:%Y-%m-%d} ({m.days:.0f} дн.)",
+        f"  подія : {claim.asset} {claim.kind.value} {claim.threshold:,.0f}"
+        + (f" (інший бар'єр гонки: {claim.race_other_threshold:,.0f})" if claim.is_race else "")
+        + f" до {claim.deadline:%Y-%m-%d} ({m.days:.0f} дн.)",
         f"  ціна YES ринку : {m.market_prob:6.2%}   модель: {m.model_prob:6.2%}   "
         f"едж: {m.edge_pp:+.1f} в.п.",
         f"  IV (тенор {m.atm_iv_term_days:.0f}д, довідково): {m.atm_iv_near:6.1%}"
@@ -119,23 +120,31 @@ def scenario_table(op: Opportunity, pnl_fn=None, buckets: int = 12) -> str:
                     f"{pnl:>12,.0f} {pnl / st.capital:>7.1%}"
                 )
     if touched:
+        # окремо для сценаріїв, де ставка ПРОГРАЛА, і де ВИГРАЛА — інакше
+        # для RACE_* (де "торкання" буває в обидва боки: наш бар'єр = програш,
+        # інший бар'єр = виграш) вони б перемішались в один незрозумілий рядок
         rows += [
             "",
-            "  ТОРКАННЯ БАР'ЄРА (ставка згоріла, опціон продається живим):",
-            f"  {'через днів':>12} {'на рівні':>8} {'ймовірн.':>9} {'P&L':>12} {'ROI':>8}",
+            "  РОЗХЕДЖ ДО ЕКСПІРАЦІЇ (подія відбулась достроково, опціон переоцінюється):",
+            f"  {'через днів':>12} {'на рівні':>8} {'ставка':>7} {'ймовірн.':>9} {'P&L':>12} {'ROI':>8}",
         ]
-        group = max(1, len(touched) // 8)
-        for i in range(0, len(touched), group):
-            chunk = touched[i : i + group]
-            prob = sum(s.prob for s in chunk)
-            if prob < 5e-4:
+        for yes in (True, False):
+            side = [s for s in touched if s.yes_wins is yes]
+            if not side:
                 continue
-            tau = sum((s.tau_years or 0) * s.prob for s in chunk) / prob * 365
-            pnl = sum(pnl_of(st, s) * s.prob for s in chunk) / prob
-            rows.append(
-                f"  {tau:>12,.0f} {chunk[0].s_final:>8,.0f} {prob:>8.2%} "
-                f"{pnl:>12,.0f} {pnl / st.capital:>7.1%}"
-            )
+            group = max(1, len(side) // 6)
+            for i in range(0, len(side), group):
+                chunk = side[i : i + group]
+                prob = sum(s.prob for s in chunk)
+                if prob < 5e-4:
+                    continue
+                tau = sum((s.tau_years or 0) * s.prob for s in chunk) / prob * 365
+                pnl = sum(pnl_of(st, s) * s.prob for s in chunk) / prob
+                lvl = sum(s.s_final * s.prob for s in chunk) / prob
+                rows.append(
+                    f"  {tau:>12,.0f} {lvl:>8,.0f} {'YES' if yes else 'NO':>7} {prob:>8.2%} "
+                    f"{pnl:>12,.0f} {pnl / st.capital:>7.1%}"
+                )
     return "\n".join(rows)
 
 
@@ -154,6 +163,12 @@ def mtm_heatmap(
     """
     st = op.structure
     claim = st.prediction.market.claim
+    if claim.is_race:
+        return (
+            f"{LINE}\n  ТЕПЛОВА КАРТА ВИХОДУ: не рахується для RACE_* — "
+            "переоцінка ставки тут вимагає нового Монте-Карло на кожну "
+            "клітинку (дорого); дивіться сценарну таблицю вище."
+        )
     now = now or dt.datetime.now(dt.timezone.utc)
     total_days = claim.days_to_deadline(now)
     spot = surface.spot
@@ -176,6 +191,12 @@ def stress_test(op: Opportunity, surface: VolSurface, vol_shift_pp: float = 10.0
     """Чутливість до волатильності: єдиний параметр, у якому ми найменш впевнені."""
     from copy import deepcopy
 
+    claim = op.structure.prediction.market.claim
+    if claim.is_race:
+        return (
+            f"{LINE}\n  СТРЕС-ТЕСТ IV: не рахується для RACE_* (те саме "
+            "обмеження, що й у теплової карти — потрібне нове Монте-Карло)."
+        )
     out = [LINE, f"  СТРЕС-ТЕСТ IV ±{vol_shift_pp:.0f} в.п. (миттєвий зсув поверхні)"]
     for shift in (-vol_shift_pp / 100.0, 0.0, vol_shift_pp / 100.0):
         s2 = deepcopy(surface)

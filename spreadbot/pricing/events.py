@@ -12,6 +12,7 @@ from typing import Optional
 
 from ..models import ClaimKind, EventClaim
 from .digital import digital_call, digital_put, prob_touch
+from .race import simulate_race
 from .surface import VolSurface
 
 
@@ -68,6 +69,21 @@ def model_probability(
             f, hi, t, s_hi, 1.0, surface.skew(hi, t)
         )
         method = "digital spread"
+    elif claim.is_race:
+        other = claim.race_other_threshold
+        if other is None:
+            raise ValueError("RACE_* без другого бар'єра (race_other_threshold)")
+        upper, lower = (claim.threshold, other) if claim.kind is ClaimKind.RACE_UPPER_FIRST \
+            else (other, claim.threshold)
+        # без замкненої формули для скінченного часу (див. pricing/race.py) —
+        # рахуємо Монте-Карло. Фіксований seed -> та сама можливість завжди
+        # дає той самий едж між скануваннями, а не "мерехтить" від запуску.
+        res = simulate_race(
+            surface.spot, lower, upper, t, sigma, mu,
+            n_paths=8_000, n_steps=200, keep_outcomes=False,
+        )
+        p = res.p_upper if claim.kind is ClaimKind.RACE_UPPER_FIRST else res.p_lower
+        method = "monte-carlo/race"
     else:
         raise ValueError(claim.kind)
 

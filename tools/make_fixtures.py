@@ -128,6 +128,23 @@ def build_polymarket(path: str) -> None:
             "volumeNum": 800_000,
             "openInterest": 210_000,
         },
+        {
+            "id": "512004",
+            "conditionId": "0xethrace5k1200",
+            "slug": "will-eth-hit-5000-before-1200",
+            "question": "Will ETH hit $5,000 before $1,200?",
+            "description": (
+                "Resolves YES if ETH trades at or above $5,000 before it trades at or "
+                "below $1,200 (Binance 1-minute candle). If neither happens before the "
+                "deadline, resolves NO."
+            ),
+            "endDate": (NOW + dt.timedelta(days=300)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "outcomes": "[\"Yes\", \"No\"]",
+            "outcomePrices": "[\"0.25\", \"0.75\"]",
+            "clobTokenIds": "[\"777777\", \"888888\"]",
+            "volumeNum": 650_000,
+            "openInterest": 150_000,
+        },
     ]
     payload = {
         "/markets": markets,
@@ -137,6 +154,8 @@ def build_polymarket(path: str) -> None:
         "/book?token_id=444444": book(0.715, 2_000),
         "/book?token_id=555555": book(0.365, 3_000),
         "/book?token_id=666666": book(0.635, 3_000),
+        "/book?token_id=777777": book(0.255, 3_000),
+        "/book?token_id=888888": book(0.745, 3_000),
     }
     with open(path, "w") as fh:
         json.dump(payload, fh, indent=1)

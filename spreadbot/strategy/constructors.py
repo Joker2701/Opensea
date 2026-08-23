@@ -84,7 +84,7 @@ def build_candidates(
     out: list[Candidate] = []
     tags_base = [f"expiry_gap:{gap:.0f}d"] if gap > 0 else []
 
-    down = claim.kind in (ClaimKind.TOUCH_BELOW, ClaimKind.BELOW_AT_EXPIRY)
+    down = claim.kind in (ClaimKind.TOUCH_BELOW, ClaimKind.BELOW_AT_EXPIRY, ClaimKind.RACE_LOWER_FIRST)
     opt_type = OptionType.PUT if down else OptionType.CALL
 
     # Анкеруємось на ПОРІГ СТАВКИ, а не на спот. Умова B (fork.py) рахує

@@ -70,6 +70,42 @@ def _find_price(text: str) -> Optional[float]:
     return None
 
 
+def _scale_price(num_str: str, suffix: str) -> float:
+    val = float(num_str.replace(",", ""))
+    if suffix.lower() == "k":
+        val *= 1_000
+    elif suffix.lower() == "m":
+        val *= 1_000_000
+    return val
+
+
+#: "X буде раніше за Y" / "X or Y first" — гонка до одного з двох
+#: бар'єрів. Перше число в патерні — той, що має статись ПЕРШИМ (тобто
+#: тригер YES); підтримуємо лише явні, недвозначні формулювання —
+#: усе інше йде в карантин, а не вгадується.
+_RACE_BEFORE = re.compile(
+    r"\bhit\s+\$?([0-9][0-9,]*\.?[0-9]*)\s*([kKmM])?\s+before\s+(?:it\s+(?:hits?|reaches?)\s+)?"
+    r"\$?([0-9][0-9,]*\.?[0-9]*)\s*([kKmM])?",
+    re.I,
+)
+_RACE_OR_FIRST = re.compile(
+    r"\$?([0-9][0-9,]*\.?[0-9]*)\s*([kKmM])?\s+or\s+\$?([0-9][0-9,]*\.?[0-9]*)\s*([kKmM])?\s+first\b",
+    re.I,
+)
+
+
+def _find_race_prices(text: str) -> Optional[tuple[float, float]]:
+    """(ціна-тригер YES, друга ціна) для ринків «яка ціна буде раніше»."""
+    m = _RACE_BEFORE.search(text) or _RACE_OR_FIRST.search(text)
+    if not m:
+        return None
+    yes_price = _scale_price(m.group(1), m.group(2) or "")
+    other_price = _scale_price(m.group(3), m.group(4) or "")
+    if yes_price == other_price:
+        return None
+    return yes_price, other_price
+
+
 def _mask_dates(text: str) -> str:
     """Прибрати з рядка все, що схоже на дату, щоб не сплутати рік/число з ціною."""
     masked = re.sub(r"\b(19|20)\d{2}\b", " ", text)
@@ -103,14 +139,31 @@ def parse_title(
 ) -> Optional[EventClaim]:
     """Повертає EventClaim або None, якщо впевненого розбору немає."""
     asset = _find_asset(title)
-    price = _find_price(_mask_dates(title))
-    if asset is None or price is None:
+    if asset is None:
         return None
     deadline = end_date or _find_date(title)
     if deadline is None:
         return None
     if deadline.tzinfo is None:
         deadline = deadline.replace(tzinfo=dt.timezone.utc)
+
+    race_prices = _find_race_prices(title)
+    if race_prices is not None:
+        yes_price, other_price = race_prices
+        kind = ClaimKind.RACE_UPPER_FIRST if yes_price > other_price else ClaimKind.RACE_LOWER_FIRST
+        return EventClaim(
+            asset=asset,
+            kind=kind,
+            threshold=yes_price,
+            race_other_threshold=other_price,
+            deadline=deadline,
+            resolution_source=resolution_source,
+            raw_title=title,
+        )
+
+    price = _find_price(_mask_dates(title))
+    if price is None:
+        return None
 
     low = title.lower()
     down_hint = bool(re.search(r"\b(dip|fall|drop|below|under|down to)\b", low))

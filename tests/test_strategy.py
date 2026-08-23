@@ -334,3 +334,123 @@ class TestAtExpirySafety(unittest.TestCase):
             found += 1
             self.assertGreaterEqual(res.metrics.worst_return, -1e-6)
         self.assertGreater(found, 0, "механізм at-expiry має знаходити вилку при сприятливих цифрах")
+
+
+class TestRaceMarkets(unittest.TestCase):
+    """RACE_*: "яка ціна буде раніше" — гонка до одного з двох бар'єрів.
+    Своя ймовірність (Монте-Карло, pricing/race.py) і своя pnl-функція
+    (make_race_pnl_fn), але той самий солвер і ті самі гейти worst>=0.
+    """
+
+    def _race_market(self, threshold=6000.0, other=1000.0, no_price=0.60,
+                      kind=None):
+        from spreadbot.models import ClaimKind, EventClaim, PredictionMarket
+
+        now, chain, surface, _ = _setup()
+        claim = EventClaim(
+            asset="ETH", kind=kind or ClaimKind.RACE_UPPER_FIRST,
+            threshold=threshold, race_other_threshold=other,
+            deadline=now + dt.timedelta(days=300),
+            resolution_source="race test",
+            raw_title=f"Will ETH hit ${threshold:,.0f} before ${other:,.0f}?",
+        )
+        market = PredictionMarket(
+            venue="polymarket", market_id="race1", claim=claim, volume_usd=1e6,
+            url="https://polymarket.com/event/race1",
+        )
+        book = lambda price, depth=4000, n=5, tick=0.005: OrderBook(
+            bids=[Level(round(price - tick * (i + 1), 4), depth * (i + 1)) for i in range(n)],
+            asks=[Level(round(price + tick * i, 4), depth * (i + 1)) for i in range(n)],
+        )
+        market.no_book = book(no_price)
+        market.yes_book = book(1.0 - no_price)
+        return now, chain, surface, market
+
+    def test_race_produces_zero_loss_structure_upper_first(self):
+        from spreadbot.strategy.payoff import make_race_pnl_fn
+
+        now, chain, surface, market = self._race_market()
+        scs = build_scenarios(market.claim, surface, now, n=60)
+        fn = make_race_pnl_fn(market.claim, surface, now, 0.01)
+        cfg = SizingConfig(capital_usd=10_000)
+        pf, of = DEFAULT_PREDICTION_FEES["polymarket"], DEFAULT_OPTION_FEES["deribit"]
+        days = market.claim.days_to_deadline(now)
+        found = 0
+        for cand in build_candidates(market, chain, include_spreads=False):
+            res = solve(
+                cand, scs, chain.spot, days, cfg, pf, of,
+                market_prob=0.60, model_prob=0.0, pnl_fn=fn,
+            )
+            if res is None:
+                continue
+            found += 1
+            self.assertGreaterEqual(res.metrics.worst_return, -1e-6)
+        self.assertGreater(found, 0)
+
+    def test_race_lower_first_uses_put(self):
+        from spreadbot.models import ClaimKind, OptionType
+
+        now, chain, surface, market = self._race_market(
+            threshold=1000.0, other=6000.0, no_price=0.60, kind=None,
+        )
+        market.claim.kind = ClaimKind.RACE_LOWER_FIRST
+        cands = build_candidates(market, chain, include_spreads=False)
+        self.assertTrue(cands)
+        for c in cands:
+            self.assertEqual(c.options[0].quote.opt_type, OptionType.PUT)
+
+    def test_race_scenarios_sum_to_one_and_split_correctly(self):
+        now, chain, surface, market = self._race_market()
+        scs = build_scenarios(market.claim, surface, now, n=60)
+        self.assertAlmostEqual(sum(s.prob for s in scs), 1.0, places=6)
+        yes = [s for s in scs if s.yes_wins]
+        no = [s for s in scs if not s.yes_wins]
+        self.assertTrue(yes and no)
+        # усі YES-сценарії -> наш поріг (верхній), усі "торкання" NO -> інший
+        for s in yes:
+            if s.unwind:
+                self.assertAlmostEqual(s.s_final, market.claim.threshold, delta=1.0)
+        for s in no:
+            if s.unwind:
+                self.assertAlmostEqual(s.s_final, market.claim.race_other_threshold, delta=1.0)
+
+    def test_race_pnl_fn_bet_won_on_other_barrier(self):
+        """Сценарій, де торкнувся ІНШИЙ бар'єр -> ставка NO виграла, а
+        не "згоріла" — головна відмінність від звичайного make_pnl_fn."""
+        from spreadbot.strategy.payoff import make_race_pnl_fn
+        from spreadbot.models import Scenario
+
+        now, chain, surface, market = self._race_market()
+        cand = build_candidates(market, chain, include_spreads=False)[0]
+        st = build_structure(
+            cand, 0.5, 10_000, chain.spot,
+            SizingConfig(), DEFAULT_PREDICTION_FEES["polymarket"], DEFAULT_OPTION_FEES["deribit"],
+            round_lots=False,
+        )
+        fn = make_race_pnl_fn(market.claim, surface, now, 0.01)
+        other_hit = Scenario(
+            label="test", yes_wins=False, s_final=market.claim.race_other_threshold,
+            prob=1.0, tau_years=0.1, unwind=True,
+        )
+        pnl = fn(st, other_hit)
+        # ставка виграла (14к+ payout) - навіть мінус вартість опціона й
+        # капітал P&L має бути помітно позитивним, а не "згорілим у нуль"
+        self.assertGreater(pnl, 0.0)
+
+    def test_prob_touch_ignoring_second_barrier_overstates_probability(self):
+        """Ключова причина, чому race не можна рахувати через звичайний
+        prob_touch: без другого бар'єра як "виходу" ймовірність торкання
+        завжди занижена порівняно з "гонкою" (шлях може вже зупинитись на
+        іншому бар'єрі раніше) — БАР'ЄРИ ТУТ НАВМИСНО БЛИЗЬКІ, щоб ефект
+        конкуренції був набагато більшим за шум Монте-Карло: коли бар'єри
+        далеко (типово для реальних "гонкових" ринків), різниця часто
+        тоне в шумі МК на скромному n_paths — це властивість геометрії
+        задачі, не помилка розрахунку."""
+        from spreadbot.pricing.digital import prob_touch
+        from spreadbot.pricing.race import simulate_race
+
+        spot, upper, lower, sigma, t = 2400.0, 3200.0, 1800.0, 0.6, 1.0
+        naive = prob_touch(spot, upper, t, sigma)
+        race = simulate_race(spot, lower, upper, t, sigma, n_paths=15000, n_steps=200,
+                              keep_outcomes=False)
+        self.assertGreater(naive, race.p_upper + 0.05)

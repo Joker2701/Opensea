@@ -38,6 +38,19 @@
    "clobTokenIds": "[\"555555\", \"666666\"]",
    "volumeNum": 800000,
    "openInterest": 210000
+  },
+  {
+   "id": "512004",
+   "conditionId": "0xethrace5k1200",
+   "slug": "will-eth-hit-5000-before-1200",
+   "question": "Will ETH hit $5,000 before $1,200?",
+   "description": "Resolves YES if ETH trades at or above $5,000 before it trades at or below $1,200 (Binance 1-minute candle). If neither happens before the deadline, resolves NO.",
+   "endDate": "2027-06-19T12:00:00Z",
+   "outcomes": "[\"Yes\", \"No\"]",
+   "outcomePrices": "[\"0.25\", \"0.75\"]",
+   "clobTokenIds": "[\"777777\", \"888888\"]",
+   "volumeNum": 650000,
+   "openInterest": 150000
   }
  ],
  "/book?token_id=111111": {
@@ -312,6 +325,98 @@
    },
    {
     "price": 0.675,
+    "size": 15000
+   }
+  ]
+ },
+ "/book?token_id=777777": {
+  "bids": [
+   {
+    "price": 0.245,
+    "size": 3000
+   },
+   {
+    "price": 0.235,
+    "size": 6000
+   },
+   {
+    "price": 0.225,
+    "size": 9000
+   },
+   {
+    "price": 0.215,
+    "size": 12000
+   },
+   {
+    "price": 0.205,
+    "size": 15000
+   }
+  ],
+  "asks": [
+   {
+    "price": 0.255,
+    "size": 3000
+   },
+   {
+    "price": 0.265,
+    "size": 6000
+   },
+   {
+    "price": 0.275,
+    "size": 9000
+   },
+   {
+    "price": 0.285,
+    "size": 12000
+   },
+   {
+    "price": 0.295,
+    "size": 15000
+   }
+  ]
+ },
+ "/book?token_id=888888": {
+  "bids": [
+   {
+    "price": 0.735,
+    "size": 3000
+   },
+   {
+    "price": 0.725,
+    "size": 6000
+   },
+   {
+    "price": 0.715,
+    "size": 9000
+   },
+   {
+    "price": 0.705,
+    "size": 12000
+   },
+   {
+    "price": 0.695,
+    "size": 15000
+   }
+  ],
+  "asks": [
+   {
+    "price": 0.745,
+    "size": 3000
+   },
+   {
+    "price": 0.755,
+    "size": 6000
+   },
+   {
+    "price": 0.765,
+    "size": 9000
+   },
+   {
+    "price": 0.775,
+    "size": 12000
+   },
+   {
+    "price": 0.785,
     "size": 15000
    }
   ]
