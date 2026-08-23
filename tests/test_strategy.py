@@ -191,3 +191,35 @@ class TestForkConditions(unittest.TestCase):
             min_ratio_for_condition_b(0.63, barrier=4000, strike=4500, premium_per_unit=100),
             float("inf"),
         )
+
+
+class TestDownsideBoundedByFriction(unittest.TestCase):
+    """Головна властивість, яку очікує користувач: якщо обидві умови вилки
+    виконані, найгірший сценарій НЕ гірший за невелику фрикцію виходу.
+
+    Спреди (довгий+короткий опціон) свідомо виключені з цього тесту й
+    вимкнені за замовчуванням: коротка нога має власну часову вартість, і
+    її відкуп при ранньому торканні може коштувати більше, ніж дає інтринсик
+    на порозі — тобто для спреду ця гарантія НЕ тримається.
+    """
+
+    def test_worst_case_near_unwind_cost_for_single_leg(self):
+        now, chain, surface, market = _setup()
+        cfg = SizingConfig(capital_usd=10_000, max_loss_frac=0.0, unwind_cost_frac=0.01)
+        pf, of = DEFAULT_PREDICTION_FEES["polymarket"], DEFAULT_OPTION_FEES["deribit"]
+        scs = build_scenarios(market.claim, surface, now, n=60, policy="unwind")
+        fn = make_pnl_fn(market.claim, surface, now, cfg.unwind_cost_frac)
+        days = market.claim.days_to_deadline(now)
+        found = 0
+        for cand in build_candidates(market, chain, include_spreads=False):
+            res = solve(
+                cand, scs, chain.spot, days, cfg, pf, of,
+                market_prob=market.implied_yes or 0.0, model_prob=0.0, pnl_fn=fn,
+            )
+            if res is None:
+                continue
+            found += 1
+            # запас невеликий, але додатний з умов A/B; повний прогін не
+            # повинен провалюватись набагато глибше, ніж фрикція виходу
+            self.assertGreater(res.metrics.worst_return, -3 * cfg.unwind_cost_frac)
+        self.assertGreater(found, 0)

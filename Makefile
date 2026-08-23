@@ -1,4 +1,4 @@
-.PHONY: test demo fixtures lint
+.PHONY: test demo fixtures lint scan bot
 
 test:
 	python3 -m unittest discover -s tests -t .
@@ -11,3 +11,6 @@ fixtures:
 
 scan:
 	python3 -m spreadbot -c config/config.yaml scan --save
+
+bot:
+	python3 -m spreadbot -c config/config.yaml bot

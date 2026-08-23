@@ -11,32 +11,32 @@ log_level: INFO
 scan:
   assets: [ETH, BTC]
   prediction_venues: [polymarket]      # polymarket | kalshi
-  option_venues: [deribit]             # deribit | bybit
+  option_venues: [bybit]               # bybit (лот 0.1 ETH) | deribit (лот 1 ETH)
   min_days: 21                         # коротші події хеджувати нічим
   max_days: 900
   min_volume_usd: 100000               # відсікає «мертві» ринки
   min_edge_pp: 3.0                     # сирий едж (ринок vs модель), в п.п.
   min_net_edge_pp: 1.0                 # після комісій і проковзування
   strike_ratios: [0.9, 0.95, 1.0, 1.05, 1.1, 1.2]
-  include_spreads: true
+  include_spreads: false               # спред несе ризик відкупу короткої ноги при ранньому торканні — див. коментар у config.py
   scenario_points: 60                  # роздільність сценарної сітки
   top_n: 15
 
 risk:
-  max_capital_per_trade_usd: 5000
-  max_total_capital_usd: 25000
+  max_capital_per_trade_usd: 10000
+  max_total_capital_usd: 50000
   risk_measure: cvar                   # cvar (рекомендовано) | worst
   cvar_alpha: 0.05
-  max_loss_frac: 0.15                  # ліміт на обрану міру ризику
-  exit_policy: unwind                  # unwind = продаємо опціон у момент торкання
-  unwind_cost_frac: 0.04               # фрикція дострокового виходу
+  max_loss_frac: 0.0                   # 0 = вимкнено; довіряємо умовам A/B
+  exit_policy: unwind                  # unwind = продаємо опціон у момент, коли ціна дійшла до порогу
+  unwind_cost_frac: 0.01               # комісія + сліпедж на достроковий вихід опціона
   allow_expiry_gap_days: 30            # наскільки опціон може гаснути раніше за ставку
   require_known_resolution_source: true
   blocked_resolution_keywords: ["UMA discretion", "subjective", "TBD"]
   vol_stress_pp: 10
 
 sizing:
-  capital_usd: 5000
+  capital_usd: 10000
   objective: ev                        # ev | maximin | cvar
   require_bet_win_breakeven: true      # прибуток ставки мусить покривати премію
   bet_win_floor_frac: 0.0
@@ -49,7 +49,13 @@ sizing:
 
 notify:
   console: true
-  telegram_token_env: SPREADBOT_TG_TOKEN
-  telegram_chat_env: SPREADBOT_TG_CHAT
-  cooldown_minutes: 120
+  telegram_token_env: SPREADBOT_TG_TOKEN   # токен від @BotFather, у змінній оточення
+  telegram_chat_env: SPREADBOT_TG_CHAT     # опційно: закріпити власника заздалегідь
+  cooldown_minutes: 120                    # не слати той самий сигнал частіше
   min_score_to_alert: 1.0
+  scan_interval_min: 15                    # як часто `spreadbot bot` сканує ринки
+
+# Усі параметри secions scan/risk/sizing вище — СТАРТОВІ дефолти.
+# Після запуску `python -m spreadbot bot` капітал, поріг едж, набір бірж і
+# пауза керуються прямо з Telegram (кнопками) і зберігаються в SQLite —
+# перезапускати процес чи правити цей файл для цього не треба.

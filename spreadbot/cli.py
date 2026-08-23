@@ -137,6 +137,31 @@ def cmd_markets(args, cfg: Config) -> int:
     return 0
 
 
+def cmd_bot(args, cfg: Config) -> int:
+    """Запустити Telegram-бота: керування з телефону + алерти."""
+    token = os.getenv(cfg.notify.telegram_token_env)
+    if not token:
+        print(
+            f"Немає токена бота: встановіть змінну оточення {cfg.notify.telegram_token_env}. "
+            "Токен видає @BotFather у Telegram."
+        )
+        return 1
+    from .notify.telegram_bot import TelegramBot
+
+    store = Storage(cfg.db_path)
+    preset_chat = os.getenv(cfg.notify.telegram_chat_env)
+    if preset_chat and not store.get_owner_chat_id():
+        store.set_owner_chat_id(preset_chat)
+    bot = TelegramBot(token, store, cfg)
+    try:
+        bot.run_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        store.close()
+    return 0
+
+
 def main(argv=None) -> int:
     p = argparse.ArgumentParser("spreadbot", description="Пошук вилок опціон × предикт-маркет")
     p.add_argument("-c", "--config", default="config/config.yaml")
@@ -157,6 +182,9 @@ def main(argv=None) -> int:
 
     m = sub.add_parser("markets", help="показати розпізнані ринки")
     m.set_defaults(func=cmd_markets)
+
+    b = sub.add_parser("bot", help="запустити Telegram-бота (алерти + керування)")
+    b.set_defaults(func=cmd_bot)
 
     args = p.parse_args(argv)
     cfg = Config.load(args.config)

@@ -247,8 +247,8 @@ def solve(
         return None
 
     def passes(m: Metrics) -> Optional[str]:
-        if risk_of(m) > abs(cfg.max_loss_frac):
-            return f"ризик {risk_of(m):.1%} > ліміту {abs(cfg.max_loss_frac):.1%}"
+        if cfg.max_loss_frac > 0 and risk_of(m) > cfg.max_loss_frac:
+            return f"ризик {risk_of(m):.1%} > ліміту {cfg.max_loss_frac:.1%}"
         if cfg.min_worst_return is not None and m.worst_return < cfg.min_worst_return:
             return f"найгірше {m.worst_return:+.1%} < {cfg.min_worst_return:+.1%}"
         if cfg.require_bet_win_breakeven and m.capital > 0:

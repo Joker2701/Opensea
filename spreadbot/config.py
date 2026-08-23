@@ -26,7 +26,13 @@ class ScanConfig:
     min_net_edge_pp: float = 1.0        # після комісій і спреду
     max_markets: int = 200
     strike_ratios: list[float] = field(default_factory=lambda: [0.9, 0.95, 1.0, 1.05, 1.1, 1.2])
-    include_spreads: bool = True
+    # Спред (довгий+короткий опціон) вимкнено за замовчуванням: коротка нога
+    # має власну часову вартість, і при РАННЬОМУ торканні бар'єра (коли до
+    # експірації ще далеко) її відкуп може коштувати дорожче, ніж дає
+    # інтринсик на порозі — тобто саме та властивість «мінус не більше
+    # комісії», яку гарантує одинарний довгий опціон, для спреду не
+    # тримається. Вмикайте свідомо, якщо розумієте цей ризик.
+    include_spreads: bool = False
     scenario_points: int = 60
     top_n: int = 15
 
@@ -37,10 +43,19 @@ class RiskConfig:
     max_total_capital_usd: float = 25_000.0
     risk_measure: str = "cvar"          # "cvar" (рекомендовано) або "worst"
     cvar_alpha: float = 0.05
-    max_loss_frac: float = 0.15         # ліміт на обрану міру ризику
+    # Головний і, за замовчуванням, ЄДИНИЙ жорсткий фільтр — дві умови
+    # стратегії (strategy/fork.py). Вони вже гарантують: якщо вони виконані,
+    # у найгіршому для стратегії сценарії (ціна дійшла до порогу) конструкція
+    # не в мінусі. max_loss_frac лишений як ДОДАТКОВИЙ, вимкнений за
+    # замовчуванням запобіжник (0.0 = не обмежувати) — щоб не відсіювати
+    # робочі угоди через мою власну, додаткову оцінку хвостового ризику.
     require_fork: bool = True           # обидві умови вилки — обов'язкові
+    max_loss_frac: float = 0.0          # 0.0 = вимкнено, довіряємо умовам A/B
     exit_policy: str = "unwind"         # "unwind" (розхедж при торканні) або "hold"
-    unwind_cost_frac: float = 0.04
+    # Комісія + сліпедж на достроковий вихід опціона. Це і є те, на що
+    # реально можна піти в мінус понад умови A/B — тримайте це реалістичною
+    # оцінкою round-trip комісії біржі, а не «буфером про всяк випадок».
+    unwind_cost_frac: float = 0.01
     min_worst_return: Optional[float] = None
     allow_expiry_gap_days: float = 30.0     # наскільки опціон може гаснути раніше за ставку
     require_known_resolution_source: bool = True
@@ -54,9 +69,12 @@ class RiskConfig:
 class NotifyConfig:
     console: bool = True
     telegram_token_env: str = "SPREADBOT_TG_TOKEN"
+    #: якщо чат власника ще не закріплений у БД, перший, хто напише /start,
+    #: стає власником. Можна закріпити наперед через цю змінну оточення.
     telegram_chat_env: str = "SPREADBOT_TG_CHAT"
-    cooldown_minutes: float = 120.0
+    cooldown_minutes: float = 120.0     # не слати той самий сигнал частіше
     min_score_to_alert: float = 1.0
+    scan_interval_min: float = 15.0     # як часто `spreadbot bot` сканує ринки
 
 
 @dataclass
@@ -71,6 +89,26 @@ class Config:
     cache_dir: Optional[str] = None
     rate_usd: float = 0.04              # безризикова ставка для дисконтування
     log_level: str = "INFO"
+
+    def __post_init__(self) -> None:
+        self._sync_risk_into_sizing()
+
+    def _sync_risk_into_sizing(self) -> None:
+        """`risk.*` — єдине джерело правди для лімітів солвера.
+
+        Раніше це синхронізувалось лише всередині `load()` для YAML-гілки,
+        тому будь-який прямий `Config()` (демо, тести, програмне використання)
+        мовчки брав власні, неузгоджені дефолти `SizingConfig`. Тепер синк
+        робиться завжди, одразу після конструювання.
+        """
+        self.sizing.risk_measure = self.risk.risk_measure
+        self.sizing.cvar_alpha = self.risk.cvar_alpha
+        self.sizing.max_loss_frac = self.risk.max_loss_frac
+        self.sizing.require_fork = self.risk.require_fork
+        self.sizing.exit_policy = self.risk.exit_policy
+        self.sizing.unwind_cost_frac = self.risk.unwind_cost_frac
+        self.sizing.min_worst_return = self.risk.min_worst_return
+        self.sizing.capital_usd = min(self.sizing.capital_usd, self.risk.max_capital_per_trade_usd)
 
     # ------------------------------------------------------------------ #
     @staticmethod
@@ -99,13 +137,5 @@ class Config:
         for key in ("offline", "fixtures", "db_path", "cache_dir", "rate_usd", "log_level"):
             if key in raw:
                 setattr(cfg, key, raw[key])
-        # ризик-ліміти мають пріоритет над сайзингом
-        cfg.sizing.risk_measure = cfg.risk.risk_measure
-        cfg.sizing.cvar_alpha = cfg.risk.cvar_alpha
-        cfg.sizing.max_loss_frac = cfg.risk.max_loss_frac
-        cfg.sizing.require_fork = cfg.risk.require_fork
-        cfg.sizing.exit_policy = cfg.risk.exit_policy
-        cfg.sizing.unwind_cost_frac = cfg.risk.unwind_cost_frac
-        cfg.sizing.min_worst_return = cfg.risk.min_worst_return
-        cfg.sizing.capital_usd = min(cfg.sizing.capital_usd, cfg.risk.max_capital_per_trade_usd)
+        cfg._sync_risk_into_sizing()   # risk.* лишається єдиним джерелом правди
         return cfg

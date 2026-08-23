@@ -45,6 +45,21 @@ CREATE TABLE IF NOT EXISTS positions (
     payload TEXT NOT NULL,
     closed_at TEXT, realized_pnl REAL
 );
+
+-- Налаштування Telegram-бота і його стан (керування з телефону).
+CREATE TABLE IF NOT EXISTS bot_state (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+
+-- Дедуп алертів: той самий сигнал (ключ можливості) не шлеться повторно
+-- в межах кулдауну, і це переживає перезапуск бота.
+CREATE TABLE IF NOT EXISTS sent_alerts (
+    key TEXT NOT NULL,
+    chat_id TEXT NOT NULL,
+    ts TEXT NOT NULL,
+    PRIMARY KEY (key, chat_id)
+);
 """
 
 
@@ -125,6 +140,72 @@ class Storage:
         return self.conn.execute(
             "SELECT * FROM opportunities ORDER BY id DESC LIMIT ?", (limit,)
         ).fetchall()
+
+    # ------------------------------------------------------------------ #
+    # Стан і налаштування Telegram-бота
+    # ------------------------------------------------------------------ #
+    def get_state(self, key: str) -> Optional[str]:
+        row = self.conn.execute(
+            "SELECT value FROM bot_state WHERE key = ?", (key,)
+        ).fetchone()
+        return row[0] if row else None
+
+    def set_state(self, key: str, value: str) -> None:
+        self.conn.execute(
+            "INSERT INTO bot_state (key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (key, value),
+        )
+        self.conn.commit()
+
+    def get_owner_chat_id(self) -> Optional[str]:
+        return self.get_state("owner_chat_id")
+
+    def set_owner_chat_id(self, chat_id: str) -> None:
+        self.set_state("owner_chat_id", str(chat_id))
+
+    def get_settings(self) -> dict:
+        from .settings_schema import DEFAULT_BOT_SETTINGS  # локальний імпорт: без циклів
+
+        raw = self.get_state("settings")
+        settings = dict(DEFAULT_BOT_SETTINGS)
+        if raw:
+            try:
+                settings.update(json.loads(raw))
+            except (json.JSONDecodeError, TypeError):
+                pass
+        return settings
+
+    def save_settings(self, settings: dict) -> None:
+        self.set_state("settings", json.dumps(settings, default=str))
+
+    def update_settings(self, **changes) -> dict:
+        settings = self.get_settings()
+        settings.update(changes)
+        self.save_settings(settings)
+        return settings
+
+    # ------------------------------------------------------------------ #
+    # Дедуп алертів (переживає перезапуск)
+    # ------------------------------------------------------------------ #
+    def was_alerted_recently(self, key: str, chat_id: str, cooldown_minutes: float) -> bool:
+        row = self.conn.execute(
+            "SELECT ts FROM sent_alerts WHERE key = ? AND chat_id = ?", (key, chat_id)
+        ).fetchone()
+        if not row:
+            return False
+        last = dt.datetime.fromisoformat(row[0])
+        age_min = (dt.datetime.now(dt.timezone.utc) - last).total_seconds() / 60.0
+        return age_min < cooldown_minutes
+
+    def mark_alerted(self, key: str, chat_id: str) -> None:
+        now = dt.datetime.now(dt.timezone.utc).isoformat()
+        self.conn.execute(
+            "INSERT INTO sent_alerts (key, chat_id, ts) VALUES (?, ?, ?) "
+            "ON CONFLICT(key, chat_id) DO UPDATE SET ts = excluded.ts",
+            (key, chat_id, now),
+        )
+        self.conn.commit()
 
     def close(self) -> None:
         self.conn.close()
