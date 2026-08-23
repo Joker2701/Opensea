@@ -328,7 +328,7 @@ def make_pnl_fn(
     claim: EventClaim,
     surface: VolSurface,
     now: Optional[dt.datetime] = None,
-    unwind_cost_frac: float = 0.04,
+    unwind_cost_frac: float = 0.01,   # тримайте синхронізовано з RiskConfig.unwind_cost_frac
 ) -> Callable[[Structure, Scenario], float]:
     """P&L з урахуванням політики виходу.
 

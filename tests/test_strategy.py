@@ -194,8 +194,11 @@ class TestForkConditions(unittest.TestCase):
 
 
 class TestDownsideBoundedByFriction(unittest.TestCase):
-    """Головна властивість, яку очікує користувач: якщо обидві умови вилки
-    виконані, найгірший сценарій НЕ гірший за невелику фрикцію виходу.
+    """Головна властивість, яку очікує користувач: НІЯКОГО мінусу взагалі —
+    найгірший сценарій по всьому розподілу не може бути гіршим за нуль.
+    Це жорсткий гейт солвера (`min_worst_return=0.0` за замовчуванням), а
+    не побажання: кандидат, для якого немає жодного співвідношення ніг і
+    жодного лоту з worst_return >= 0, просто не потрапляє у видачу.
 
     Спреди (довгий+короткий опціон) свідомо виключені з цього тесту й
     вимкнені за замовчуванням: коротка нога має власну часову вартість, і
@@ -203,9 +206,9 @@ class TestDownsideBoundedByFriction(unittest.TestCase):
     на порозі — тобто для спреду ця гарантія НЕ тримається.
     """
 
-    def test_worst_case_near_unwind_cost_for_single_leg(self):
+    def test_worst_case_never_negative_for_single_leg(self):
         now, chain, surface, market = _setup()
-        cfg = SizingConfig(capital_usd=10_000, max_loss_frac=0.0, unwind_cost_frac=0.01)
+        cfg = SizingConfig(capital_usd=10_000, unwind_cost_frac=0.01)
         pf, of = DEFAULT_PREDICTION_FEES["polymarket"], DEFAULT_OPTION_FEES["deribit"]
         scs = build_scenarios(market.claim, surface, now, n=60, policy="unwind")
         fn = make_pnl_fn(market.claim, surface, now, cfg.unwind_cost_frac)
@@ -219,7 +222,51 @@ class TestDownsideBoundedByFriction(unittest.TestCase):
             if res is None:
                 continue
             found += 1
-            # запас невеликий, але додатний з умов A/B; повний прогін не
-            # повинен провалюватись набагато глибше, ніж фрикція виходу
-            self.assertGreater(res.metrics.worst_return, -3 * cfg.unwind_cost_frac)
+            self.assertGreaterEqual(res.metrics.worst_return, -1e-6)
+            self.assertEqual(res.metrics.prob_loss, 0.0)
         self.assertGreater(found, 0)
+
+    def test_narrow_window_found_at_realistic_capital(self):
+        """Вікно, де worst>=0, буває вузьким і залежить від масштабу
+        (проковзування по стакану) — солвер має знаходити його, а не
+        втрачати через грубу сітку чи невдале округлення лоту."""
+        now, chain, surface, market = _setup()
+        pf, of = DEFAULT_PREDICTION_FEES["polymarket"], DEFAULT_OPTION_FEES["deribit"]
+        scs = build_scenarios(market.claim, surface, now, n=60, policy="unwind")
+        fn = make_pnl_fn(market.claim, surface, now, 0.01)
+        days = market.claim.days_to_deadline(now)
+        cand = next(
+            c for c in build_candidates(market, chain, include_spreads=False)
+            if "2800" in c.name
+        )
+        for capital in (2_000.0, 8_000.0, 10_000.0):
+            cfg = SizingConfig(capital_usd=capital, unwind_cost_frac=0.01)
+            res = solve(
+                cand, scs, chain.spot, days, cfg, pf, of,
+                market_prob=market.implied_yes or 0.0, model_prob=0.0, pnl_fn=fn,
+            )
+            self.assertIsNotNone(res, f"capital={capital}: вікно не знайдено")
+            self.assertGreaterEqual(res.metrics.worst_return, -1e-6)
+
+    def test_oversized_position_is_refused_not_faked(self):
+        """Глибина стакана скінченна: якщо запитаний капітал завеликий для
+        книги (ковзання з'їдає весь запас умов A/B), солвер має ВІДМОВИТИ,
+        а не видати конструкцію, для якої гарантія насправді не тримається."""
+        now, chain, surface, market = _setup()
+        pf, of = DEFAULT_PREDICTION_FEES["polymarket"], DEFAULT_OPTION_FEES["deribit"]
+        scs = build_scenarios(market.claim, surface, now, n=60, policy="unwind")
+        fn = make_pnl_fn(market.claim, surface, now, 0.01)
+        days = market.claim.days_to_deadline(now)
+        cand = next(
+            c for c in build_candidates(market, chain, include_spreads=False)
+            if "2800" in c.name
+        )
+        cfg = SizingConfig(capital_usd=500_000.0, unwind_cost_frac=0.01)
+        res = solve(
+            cand, scs, chain.spot, days, cfg, pf, of,
+            market_prob=market.implied_yes or 0.0, model_prob=0.0, pnl_fn=fn,
+        )
+        # інваріант тримається за будь-якого результату: або чесна відмова,
+        # або (якщо все ж знайшлось) worst_return все одно >= 0
+        if res is not None:
+            self.assertGreaterEqual(res.metrics.worst_return, -1e-6)

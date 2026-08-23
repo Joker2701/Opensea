@@ -41,7 +41,10 @@ class SizingConfig:
     risk_measure: str = "cvar"
     cvar_alpha: float = 0.05
     max_loss_frac: float = 0.35        # ліміт на обрану міру ризику (частка капіталу)
-    min_worst_return: Optional[float] = None  # жорсткий поріг на найгірший сценарій
+    #: справжній жорсткий гейт: найгірший сценарій по всьому розподілу
+    #: (з комісіями входу і виходу) не може бути гіршим за це значення.
+    #: 0.0 = ніколи в мінус; None = вимкнено (не рекомендується)
+    min_worst_return: Optional[float] = 0.0
     #: головний критерій: обидві умови вилки (див. strategy/fork.py)
     require_fork: bool = True
     #: додаткова перевірка на всьому сценарному розподілі: якщо ставка
@@ -211,13 +214,16 @@ def solve(
     model_prob: float = 0.0,
     pnl_fn=None,
 ) -> Optional[SizingResult]:
-    """Двопрохідний пошук: спершу співвідношення ніг, потім реальний масштаб.
+    """Пошук у три кроки: вікно на малому масштабі -> те саме вікно на
+    реальному масштабі (з реальним проковзуванням) -> вирівнювання по лоту.
 
-    P&L однорідний за масштабом (з точністю до проковзування і лотності),
-    тому спочатку шукаємо оптимальний RATIO на одиничному масштабі,
-    а вже потім розтягуємо позицію під капітал і глибину стаканів.
+    Найгірший сценарій — жорсткий гейт (`cfg.min_worst_return`, за
+    замовчуванням 0.0: результат ніколи не йде в мінус). Вікно
+    співвідношень, де це тримається, зазвичай вузьке (воно затиснуте
+    умовами A і B strategy/fork.py з двох боків) і залежить від розміру
+    заявки через проковзування по стакану — тому шукається саме на
+    реальному розмірі, а не екстраполюється з малого.
     """
-    best: Optional[SizingResult] = None
     rejects: list[str] = []   # діагностика: чому відкинули те чи інше співвідношення
 
     def risk_of(m: Metrics) -> float:
@@ -249,52 +255,152 @@ def solve(
     def passes(m: Metrics) -> Optional[str]:
         if cfg.max_loss_frac > 0 and risk_of(m) > cfg.max_loss_frac:
             return f"ризик {risk_of(m):.1%} > ліміту {cfg.max_loss_frac:.1%}"
-        if cfg.min_worst_return is not None and m.worst_return < cfg.min_worst_return:
-            return f"найгірше {m.worst_return:+.1%} < {cfg.min_worst_return:+.1%}"
+        if cfg.min_worst_return is not None and m.worst_return < cfg.min_worst_return - 1e-9:
+            return f"найгірше {m.worst_return:+.2%} < {cfg.min_worst_return:+.2%}"
         if cfg.require_bet_win_breakeven and m.capital > 0:
             floor = m.bet_win_floor / m.capital
             if floor < -abs(cfg.bet_win_floor_frac) - 1e-9:
                 return f"ставка виграла, але P&L {floor:+.1%} < 0 (премія не покрита)"
         return None
 
-    # --- прохід 1: співвідношення ніг, без лотності і без обмежень глибини ---
-    for i in range(cfg.ratio_steps + 1):
-        ratio = cfg.ratio_min + (cfg.ratio_max - cfg.ratio_min) * i / cfg.ratio_steps
-        if ratio <= 0:
-            continue
-        st = build_structure(
-            cand, ratio, UNIT_PAYOUT, spot, cfg, pm_fees, opt_fees, round_lots=False
-        )
+    def at(ratio: float, payout: float) -> tuple[Optional[Structure], Optional[Metrics]]:
+        st = build_structure(cand, ratio, payout, spot, cfg, pm_fees, opt_fees, round_lots=False)
         if st is None:
-            continue
-        m = evaluate(st, scenarios, days, market_prob, model_prob, cfg.cvar_alpha, pnl_fn)
-        why = check_fork(st, m) or passes(m)
-        if why:
-            rejects.append(f"ratio={ratio:.3f}: {why}")
-            continue
-        if best is None or objective_of(m) > objective_of(best.metrics):
-            best = SizingResult(structure=st, metrics=m, ratio=ratio, scale=1.0)
+            return None, None
+        return st, evaluate(st, scenarios, days, market_prob, model_prob, cfg.cvar_alpha, pnl_fn)
 
-    if best is None:
-        log.debug("кандидат %s відкинуто: %s", cand.name, "; ".join(rejects[:3]))
+    floor = cfg.min_worst_return if cfg.min_worst_return is not None else -math.inf
+
+    def find_window(payout: float) -> Optional[SizingResult]:
+        """Знайти найкраще (за objective) співвідношення ніг, у якого
+        найгірший сценарій НЕ ГІРШИЙ за floor, — на ЗАДАНОМУ масштабі.
+
+        Проковзування по стакану (і на ставці, і на опціоні) залежить від
+        АБСОЛЮТНОГО розміру заявки, тому вікно на payout=1000 і на
+        payout=цільовий капітал — це РІЗНІ вікна: більший розмір ковтає
+        глибший, гірший за ціною шматок книги. Тому цю функцію викликають
+        двічі — спершу на малому payout, щоб оцінити масштаб капіталу,
+        потім ще раз на реальному, щоб знайти вікно, яке насправді
+        витримає реальне виконання.
+        """
+        def worst_at(ratio: float) -> float:
+            _, m = at(ratio, payout)
+            return m.worst_return if m is not None else -math.inf
+
+        lo_r = max(cfg.ratio_min, 1e-4)
+        hi_r = cfg.ratio_max
+        if hi_r <= lo_r:
+            return None
+
+        # вершина: worst_return(ratio) емпірично одновершинна (замало хеджа
+        # -> росте збиток від торкання; забагато -> росте непокрита премія)
+        a, b = lo_r, hi_r
+        for _ in range(60):
+            m1 = a + (b - a) / 3.0
+            m2 = b - (b - a) / 3.0
+            if worst_at(m1) < worst_at(m2):
+                a = m1
+            else:
+                b = m2
+        r_peak = 0.5 * (a + b)
+        st_peak, m_peak = at(r_peak, payout)
+        if st_peak is None or m_peak.worst_return < floor - 1e-9:
+            return None
+
+        # межі допустимого вікна навколо вершини (бісекція в обидва боки)
+        def edge(inner: float, outer: float) -> float:
+            for _ in range(50):
+                mid = 0.5 * (inner + outer)
+                if worst_at(mid) >= floor - 1e-9:
+                    inner = mid
+                else:
+                    outer = mid
+            return inner
+
+        r_lo, r_hi = edge(r_peak, lo_r), edge(r_peak, hi_r)
+
+        # усередині вікна максимізуємо цільову метрику (EV за замовчуванням)
+        best_here: Optional[SizingResult] = None
+        steps = max(cfg.ratio_steps, 20)
+        for i in range(steps + 1):
+            ratio = r_lo + (r_hi - r_lo) * i / steps
+            st, m = at(ratio, payout)
+            if st is None:
+                continue
+            why = check_fork(st, m) or passes(m)
+            if why:
+                rejects.append(f"payout={payout:.0f} ratio={ratio:.4f}: {why}")
+                continue
+            if best_here is None or objective_of(m) > objective_of(best_here.metrics):
+                best_here = SizingResult(structure=st, metrics=m, ratio=ratio,
+                                          scale=payout / UNIT_PAYOUT)
+
+        if best_here is None:
+            why = check_fork(st_peak, m_peak) or passes(m_peak)
+            if why:
+                return None
+            best_here = SizingResult(structure=st_peak, metrics=m_peak, ratio=r_peak,
+                                      scale=payout / UNIT_PAYOUT)
+        return best_here
+
+    # --- прохід 1: оцінити масштаб капіталу на малому payout ---
+    approx = find_window(UNIT_PAYOUT)
+    if approx is None:
+        log.debug("кандидат %s: безпечного вікна немає навіть на малому розмірі", cand.name)
         return None
-
-    # --- прохід 2: реальний масштаб під капітал, лотність і глибину стаканів ---
-    unit_cap = best.structure.capital
+    unit_cap = approx.structure.capital
     if unit_cap <= 0:
         return None
-    scale = cfg.capital_usd / unit_cap
-    scaled = build_structure(
-        cand, best.ratio, UNIT_PAYOUT * scale, spot, cfg, pm_fees, opt_fees, round_lots=True
-    )
-    if scaled is None or scaled.capital < cfg.min_capital_usd:
+
+    # --- прохід 2: те саме вікно, але на РЕАЛЬНОМУ розмірі (з реальним
+    # проковзуванням) — саме воно й піде в остаточну структуру ---
+    target_payout = UNIT_PAYOUT * cfg.capital_usd / unit_cap
+    best = find_window(target_payout)
+    if best is None:
+        log.debug("кандидат %s: вікно є на малому розмірі, але зникає на реальному "
+                   "(проковзування на глибині книги з'їдає запас)", cand.name)
         return None
-    m = evaluate(scaled, scenarios, days, market_prob, model_prob, cfg.cvar_alpha, pnl_fn)
-    why = check_fork(scaled, m) or passes(m)
-    if why:
-        # лотність/проковзування зіпсували вилку на реальному розмірі —
-        # це не «майже підходить», це відмова: торгувати нема чого
-        log.debug("кандидат %s не пережив масштабування: %s", cand.name, why)
+    if best.structure.capital < cfg.min_capital_usd:
         return None
-    m.liquidity_usd = scaled.prediction.size * scaled.prediction.price
-    return SizingResult(structure=scaled, metrics=m, ratio=best.ratio, scale=scale, rejected=rejects[:5])
+
+    # --- прохід 3: лотність, БЕЗ зміни ratio ---
+    #
+    # Розмір ставки — суцільна величина (не лотована), тому для БУДЬ-ЯКОГО
+    # цілого числа лотів опціона можна підібрати такий розмір ставки, що
+    # ratio = qty_опціона / payout_ставки лишиться РІВНО тим, що знайдено
+    # вище (і, отже, лишиться всередині безпечного вікна). Округлювати сам
+    # ratio — от де ламалась гарантія: найближчий лот міг лежати ЗА межами
+    # вузького вікна. Тут натомість варіюється лише МАСШТАБ (скільки лотів).
+    if not cand.options:
+        return None
+    ref = cand.options[0]
+    step = max(ref.quote.min_qty, 1e-9)
+    n_est = max(round(best.ratio * ref.weight * target_payout / (UNIT_PAYOUT * step)), 1)
+
+    final: Optional[SizingResult] = None
+    for n in {max(n_est - 1, 1), n_est, n_est + 1}:
+        payout = n * step * UNIT_PAYOUT / (ref.weight * best.ratio)
+        scaled = build_structure(
+            cand, best.ratio, payout, spot, cfg, pm_fees, opt_fees, round_lots=False
+        )
+        if scaled is None or scaled.capital < cfg.min_capital_usd:
+            continue
+        m = evaluate(scaled, scenarios, days, market_prob, model_prob, cfg.cvar_alpha, pnl_fn)
+        why = check_fork(scaled, m) or passes(m)
+        if why:
+            # книга виконала гірше за очікуване і зсунула ratio — крайовий
+            # випадок; пробуємо інші n, а не здаємось одразу
+            rejects.append(f"n={n} лотів: {why}")
+            continue
+        if final is None or abs(scaled.capital - cfg.capital_usd) < abs(
+            final.structure.capital - cfg.capital_usd
+        ):
+            m.liquidity_usd = scaled.prediction.size * scaled.prediction.price
+            final = SizingResult(structure=scaled, metrics=m, ratio=best.ratio,
+                                  scale=payout / UNIT_PAYOUT)
+
+    if final is None:
+        log.debug("кандидат %s: жоден лот не пройшов після масштабування: %s",
+                   cand.name, "; ".join(rejects[-3:]))
+        return None
+    return final
