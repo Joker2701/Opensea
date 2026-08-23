@@ -377,8 +377,15 @@ def solve(
     step = max(ref.quote.min_qty, 1e-9)
     n_est = max(round(best.ratio * ref.weight * target_payout / (UNIT_PAYOUT * step)), 1)
 
+    # Пробуємо ширшу околицю лотів, не тільки сусідні ±1: коли безпечне
+    # вікно на реальному масштабі вузьке, найближчий до цільового капіталу
+    # лот іноді випадає за його межі, а на відстані ±2..5 лотів усе ще
+    # лежить усередині — виявлено емпірично (капітал=2000 на певному
+    # кандидаті губився при пошуку лише в ±1, хоча сусідні капітали
+    # знаходили вікно).
     final: Optional[SizingResult] = None
-    for n in {max(n_est - 1, 1), n_est, n_est + 1}:
+    candidates_n = {max(n_est + d, 1) for d in range(-5, 6)}
+    for n in sorted(candidates_n, key=lambda n: abs(n - n_est)):
         payout = n * step * UNIT_PAYOUT / (ref.weight * best.ratio)
         scaled = build_structure(
             cand, best.ratio, payout, spot, cfg, pm_fees, opt_fees, round_lots=False
