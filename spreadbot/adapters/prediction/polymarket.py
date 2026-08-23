@@ -67,6 +67,7 @@ class PolymarketAdapter(PredictionAdapter):
     ) -> list[PredictionMarket]:
         now = dt.datetime.now(dt.timezone.utc)
         out: list[PredictionMarket] = []
+        seen = 0
         offset = 0
         page = min(limit, 100)
         while len(out) < limit:
@@ -85,12 +86,18 @@ class PolymarketAdapter(PredictionAdapter):
             if not rows:
                 break
             offset += page
+            seen += len(rows)
             for row in rows:
                 m = self._to_market(row, now, assets, min_days, max_days)
                 if m is not None:
                     out.append(m)
             if len(rows) < page:
                 break
+        log.info(
+            "polymarket: отримано %d ринків з API, розпізнано і пройшло фільтри %d "
+            "(assets=%s, %.0f-%.0f днів) — увімкніть -v/DEBUG, щоб побачити "
+            "нерозпізнані заголовки", seen, len(out), sorted(assets), min_days, max_days,
+        )
         return out[:limit]
 
     def _to_market(self, row: dict, now, assets, min_days, max_days) -> Optional[PredictionMarket]:
@@ -101,7 +108,13 @@ class PolymarketAdapter(PredictionAdapter):
             end_date=end,
             resolution_source=(row.get("description") or "")[:400] or "unknown",
         )
-        if claim is None or claim.asset not in set(assets):
+        if claim is None:
+            # діагностика покриття парсера на живих заголовках — regex-и
+            # ніколи не перевірялись проти реального фіду, тому carantine
+            # без логу зробив би прогалини непомітними
+            log.debug("не розпізнано заголовок ринку: %r", title)
+            return None
+        if claim.asset not in set(assets):
             return None
         days = claim.days_to_deadline(now)
         if not (min_days <= days <= max_days):

@@ -1,6 +1,7 @@
 """Оркестратор: ринки -> модельна ймовірність -> едж -> конструкції -> ранжування."""
 from __future__ import annotations
 
+import dataclasses
 import datetime as dt
 import logging
 from dataclasses import dataclass, field
@@ -171,6 +172,12 @@ class Scanner:
                 max_expiry_gap_days=self.cfg.risk.allow_expiry_gap_days,
             )
             pm_fees = DEFAULT_PREDICTION_FEES.get(m.venue, PredictionFees())
+            if m.venue == "polymarket":
+                # coeff редагується з config.yaml (scan.polymarket_taker_fee_coeff),
+                # бо він не звірений з офіційною документацією — див. config.py
+                pm_fees = dataclasses.replace(
+                    pm_fees, parabolic_taker_coeff=self.cfg.scan.polymarket_taker_fee_coeff
+                )
             opt_fees = DEFAULT_OPTION_FEES.get(chain.venue, OptionFees())
             days = m.claim.days_to_deadline(now)
 
