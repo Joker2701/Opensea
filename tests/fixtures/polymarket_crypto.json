@@ -8,7 +8,7 @@
    "description": "This market resolves YES if the price of Ethereum (ETH) trades at or above $4,000.00 at any point before June 30, 2027, 23:59 ET, according to the Binance 1-minute candle high for ETHUSDT.",
    "endDate": "2027-06-30T23:59:00Z",
    "outcomes": "[\"Yes\", \"No\"]",
-   "outcomePrices": "[\"0.37\", \"0.63\"]",
+   "outcomePrices": "[\"0.42\", \"0.58\"]",
    "clobTokenIds": "[\"111111\", \"222222\"]",
    "volumeNum": 4200000,
    "openInterest": 900000
@@ -21,7 +21,7 @@
    "description": "Resolves YES if ETH trades at or above $5,000 before June 30, 2027 (Binance 1m high).",
    "endDate": "2027-06-30T23:59:00Z",
    "outcomes": "[\"Yes\", \"No\"]",
-   "outcomePrices": "[\"0.22\", \"0.78\"]",
+   "outcomePrices": "[\"0.28\", \"0.72\"]",
    "clobTokenIds": "[\"333333\", \"444444\"]",
    "volumeNum": 1100000,
    "openInterest": 300000
@@ -34,7 +34,7 @@
    "description": "Resolves YES if ETH is above $3,000 at 8:00 UTC on December 25, 2026 (Chainlink ETH/USD).",
    "endDate": "2026-12-25T08:00:00Z",
    "outcomes": "[\"Yes\", \"No\"]",
-   "outcomePrices": "[\"0.30\", \"0.70\"]",
+   "outcomePrices": "[\"0.36\", \"0.64\"]",
    "clobTokenIds": "[\"555555\", \"666666\"]",
    "volumeNum": 800000,
    "openInterest": 210000
@@ -43,33 +43,11 @@
  "/book?token_id=111111": {
   "bids": [
    {
-    "price": 0.365,
+    "price": 0.415,
     "size": 4000
    },
    {
-    "price": 0.355,
-    "size": 8000
-   },
-   {
-    "price": 0.345,
-    "size": 12000
-   },
-   {
-    "price": 0.335,
-    "size": 16000
-   },
-   {
-    "price": 0.325,
-    "size": 20000
-   }
-  ],
-  "asks": [
-   {
-    "price": 0.375,
-    "size": 4000
-   },
-   {
-    "price": 0.385,
+    "price": 0.405,
     "size": 8000
    },
    {
@@ -77,11 +55,33 @@
     "size": 12000
    },
    {
-    "price": 0.405,
+    "price": 0.385,
     "size": 16000
    },
    {
-    "price": 0.415,
+    "price": 0.375,
+    "size": 20000
+   }
+  ],
+  "asks": [
+   {
+    "price": 0.425,
+    "size": 4000
+   },
+   {
+    "price": 0.435,
+    "size": 8000
+   },
+   {
+    "price": 0.445,
+    "size": 12000
+   },
+   {
+    "price": 0.455,
+    "size": 16000
+   },
+   {
+    "price": 0.465,
     "size": 20000
    }
   ]
@@ -89,11 +89,33 @@
  "/book?token_id=222222": {
   "bids": [
    {
-    "price": 0.615,
+    "price": 0.565,
     "size": 4000
    },
    {
-    "price": 0.605,
+    "price": 0.555,
+    "size": 8000
+   },
+   {
+    "price": 0.545,
+    "size": 12000
+   },
+   {
+    "price": 0.535,
+    "size": 16000
+   },
+   {
+    "price": 0.525,
+    "size": 20000
+   }
+  ],
+  "asks": [
+   {
+    "price": 0.575,
+    "size": 4000
+   },
+   {
+    "price": 0.585,
     "size": 8000
    },
    {
@@ -101,33 +123,11 @@
     "size": 12000
    },
    {
-    "price": 0.585,
+    "price": 0.605,
     "size": 16000
    },
    {
-    "price": 0.575,
-    "size": 20000
-   }
-  ],
-  "asks": [
-   {
-    "price": 0.625,
-    "size": 4000
-   },
-   {
-    "price": 0.635,
-    "size": 8000
-   },
-   {
-    "price": 0.645,
-    "size": 12000
-   },
-   {
-    "price": 0.655,
-    "size": 16000
-   },
-   {
-    "price": 0.665,
+    "price": 0.615,
     "size": 20000
    }
   ]
@@ -135,45 +135,45 @@
  "/book?token_id=333333": {
   "bids": [
    {
-    "price": 0.215,
+    "price": 0.275,
     "size": 2000
    },
    {
-    "price": 0.205,
+    "price": 0.265,
     "size": 4000
    },
    {
-    "price": 0.195,
+    "price": 0.255,
     "size": 6000
    },
    {
-    "price": 0.185,
+    "price": 0.245,
     "size": 8000
    },
    {
-    "price": 0.175,
+    "price": 0.235,
     "size": 10000
    }
   ],
   "asks": [
    {
-    "price": 0.225,
+    "price": 0.285,
     "size": 2000
    },
    {
-    "price": 0.235,
+    "price": 0.295,
     "size": 4000
    },
    {
-    "price": 0.245,
+    "price": 0.305,
     "size": 6000
    },
    {
-    "price": 0.255,
+    "price": 0.315,
     "size": 8000
    },
    {
-    "price": 0.265,
+    "price": 0.325,
     "size": 10000
    }
   ]
@@ -181,45 +181,45 @@
  "/book?token_id=444444": {
   "bids": [
    {
-    "price": 0.765,
+    "price": 0.705,
     "size": 2000
    },
    {
-    "price": 0.755,
+    "price": 0.695,
     "size": 4000
    },
    {
-    "price": 0.745,
+    "price": 0.685,
     "size": 6000
    },
    {
-    "price": 0.735,
+    "price": 0.675,
     "size": 8000
    },
    {
-    "price": 0.725,
+    "price": 0.665,
     "size": 10000
    }
   ],
   "asks": [
    {
-    "price": 0.775,
+    "price": 0.715,
     "size": 2000
    },
    {
-    "price": 0.785,
+    "price": 0.725,
     "size": 4000
    },
    {
-    "price": 0.795,
+    "price": 0.735,
     "size": 6000
    },
    {
-    "price": 0.805,
+    "price": 0.745,
     "size": 8000
    },
    {
-    "price": 0.815,
+    "price": 0.755,
     "size": 10000
    }
   ]
@@ -227,45 +227,45 @@
  "/book?token_id=555555": {
   "bids": [
    {
-    "price": 0.295,
+    "price": 0.355,
     "size": 3000
    },
    {
-    "price": 0.285,
+    "price": 0.345,
     "size": 6000
    },
    {
-    "price": 0.275,
+    "price": 0.335,
     "size": 9000
    },
    {
-    "price": 0.265,
+    "price": 0.325,
     "size": 12000
    },
    {
-    "price": 0.255,
+    "price": 0.315,
     "size": 15000
    }
   ],
   "asks": [
    {
-    "price": 0.305,
+    "price": 0.365,
     "size": 3000
    },
    {
-    "price": 0.315,
+    "price": 0.375,
     "size": 6000
    },
    {
-    "price": 0.325,
+    "price": 0.385,
     "size": 9000
    },
    {
-    "price": 0.335,
+    "price": 0.395,
     "size": 12000
    },
    {
-    "price": 0.345,
+    "price": 0.405,
     "size": 15000
    }
   ]
@@ -273,45 +273,45 @@
  "/book?token_id=666666": {
   "bids": [
    {
-    "price": 0.685,
+    "price": 0.625,
     "size": 3000
    },
    {
-    "price": 0.675,
+    "price": 0.615,
     "size": 6000
    },
    {
-    "price": 0.665,
+    "price": 0.605,
     "size": 9000
    },
    {
-    "price": 0.655,
+    "price": 0.595,
     "size": 12000
    },
    {
-    "price": 0.645,
+    "price": 0.585,
     "size": 15000
    }
   ],
   "asks": [
    {
-    "price": 0.695,
+    "price": 0.635,
     "size": 3000
    },
    {
-    "price": 0.705,
+    "price": 0.645,
     "size": 6000
    },
    {
-    "price": 0.715,
+    "price": 0.655,
     "size": 9000
    },
    {
-    "price": 0.725,
+    "price": 0.665,
     "size": 12000
    },
    {
-    "price": 0.735,
+    "price": 0.675,
     "size": 15000
    }
   ]

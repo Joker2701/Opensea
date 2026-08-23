@@ -52,8 +52,16 @@ class TestFees(unittest.TestCase):
         self.assertAlmostEqual(fees.trade_fee(1.0, 500.0, 3000.0), 0.9, places=9)
 
     def test_kalshi_formula(self):
-        fees = PredictionFees(kalshi_formula=True)
+        fees = PredictionFees(parabolic_taker_fee=True)
         self.assertGreater(fees.entry_fee(100, 0.5), fees.entry_fee(100, 0.05))
+
+    def test_polymarket_market_order_fee_matches_source_example(self):
+        # $500 на 1000 шейрів по 50% -> $18 комісії (1,8% від шейрів,
+        # 3,6% від вкладених грошей) — приклад із гайду користувача
+        fees = DEFAULT_PREDICTION_FEES["polymarket"]
+        fee = fees.entry_fee(size=1000, price=0.5)
+        self.assertAlmostEqual(fee, 18.0, places=1)
+        self.assertAlmostEqual(fee / 500.0, 0.036, places=2)
 
 
 class TestScenarios(unittest.TestCase):
@@ -306,8 +314,8 @@ class TestAtExpirySafety(unittest.TestCase):
                 asks=[Level(round(price + tick * i, 4), depth * (i + 1)) for i in range(n)],
             )
 
-        market.no_book = book(0.40)   # штучно дешевша ставка NO
-        market.yes_book = book(0.60)
+        market.no_book = book(0.32)   # штучно дешевша ставка NO (з запасом понад комісію маркет-ноги)
+        market.yes_book = book(0.68)
 
         scs = build_scenarios(market.claim, surface, now, n=60, policy="unwind")
         fn = make_pnl_fn(market.claim, surface, now, 0.01)
@@ -319,7 +327,7 @@ class TestAtExpirySafety(unittest.TestCase):
         for cand in build_candidates(market, chain):
             res = solve(
                 cand, scs, chain.spot, days, cfg, pf, of,
-                market_prob=0.60, model_prob=0.0, pnl_fn=fn,
+                market_prob=0.68, model_prob=0.0, pnl_fn=fn,
             )
             if res is None:
                 continue

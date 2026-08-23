@@ -92,7 +92,12 @@ def build_polymarket(path: str) -> None:
             ),
             "endDate": "2027-06-30T23:59:00Z",
             "outcomes": "[\"Yes\", \"No\"]",
-            "outcomePrices": "[\"0.37\", \"0.63\"]",
+            # едж навмисно ширший за мінімально можливий: з 1 квітня 2026
+            # Polymarket бере комісію на маркет-ноги (до 1,8% від шейрів,
+            # див. strategy/costs.py) — тонкий едж 9,5 в.п. з'їдався б нею
+            # цілком, тож демо-фікстура тепер показує реалістично привабливу
+            # можливість, а не граничний випадок
+            "outcomePrices": "[\"0.42\", \"0.58\"]",
             "clobTokenIds": "[\"111111\", \"222222\"]",
             "volumeNum": 4_200_000,
             "openInterest": 900_000,
@@ -105,7 +110,7 @@ def build_polymarket(path: str) -> None:
             "description": "Resolves YES if ETH trades at or above $5,000 before June 30, 2027 (Binance 1m high).",
             "endDate": "2027-06-30T23:59:00Z",
             "outcomes": "[\"Yes\", \"No\"]",
-            "outcomePrices": "[\"0.22\", \"0.78\"]",
+            "outcomePrices": "[\"0.28\", \"0.72\"]",
             "clobTokenIds": "[\"333333\", \"444444\"]",
             "volumeNum": 1_100_000,
             "openInterest": 300_000,
@@ -118,7 +123,7 @@ def build_polymarket(path: str) -> None:
             "description": "Resolves YES if ETH is above $3,000 at 8:00 UTC on December 25, 2026 (Chainlink ETH/USD).",
             "endDate": "2026-12-25T08:00:00Z",
             "outcomes": "[\"Yes\", \"No\"]",
-            "outcomePrices": "[\"0.30\", \"0.70\"]",
+            "outcomePrices": "[\"0.36\", \"0.64\"]",
             "clobTokenIds": "[\"555555\", \"666666\"]",
             "volumeNum": 800_000,
             "openInterest": 210_000,
@@ -126,12 +131,12 @@ def build_polymarket(path: str) -> None:
     ]
     payload = {
         "/markets": markets,
-        "/book?token_id=111111": book(0.375, 4_000),
-        "/book?token_id=222222": book(0.625, 4_000),
-        "/book?token_id=333333": book(0.225, 2_000),
-        "/book?token_id=444444": book(0.775, 2_000),
-        "/book?token_id=555555": book(0.305, 3_000),
-        "/book?token_id=666666": book(0.695, 3_000),
+        "/book?token_id=111111": book(0.425, 4_000),
+        "/book?token_id=222222": book(0.575, 4_000),
+        "/book?token_id=333333": book(0.285, 2_000),
+        "/book?token_id=444444": book(0.715, 2_000),
+        "/book?token_id=555555": book(0.365, 3_000),
+        "/book?token_id=666666": book(0.635, 3_000),
     }
     with open(path, "w") as fh:
         json.dump(payload, fh, indent=1)
